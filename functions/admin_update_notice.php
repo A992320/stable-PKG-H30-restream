@@ -38,6 +38,9 @@ function adminUpdateSources(string $channel): array {
           ];
 }
 function adminUpdateFetch(string $url) {
+    // تخطي الكاش الخاص بجيتهاب
+    $url .= (strpos($url, '?') === false ? '?' : '&') . 't=' . time();
+    
     $ctx = stream_context_create(['http' => [
         'method' => 'GET', 'timeout' => 4, 'follow_location' => true,
         'header' => "User-Agent: SHASHITY-Admin-Update-Check\r\n",
@@ -61,37 +64,19 @@ function adminUpdateLogLines(string $raw): array {
     return $out;
 }
 function adminUpdateStatus(): array {
-    static $status = null;
-    if ($status !== null) return $status;
+    if (session_status() === PHP_SESSION_NONE) {
+        @session_start();
+    }
 
     $channel = adminUpdateChannel();
     $local = adminUpdateLocalVersion();
+    
     $cache = adminUpdateReadJson(adminUpdateCacheFile());
     $item = is_array($cache[$channel] ?? null) ? $cache[$channel] : [];
-    $fresh = !empty($item['checked_at']) && ((int)$item['checked_at'] > time() - 3600);
-
-    if (!$fresh) {
-        $src = adminUpdateSources($channel);
-        $remoteRaw = adminUpdateFetch($src['version']);
-        if ($remoteRaw !== false) {
-            $remote = trim($remoteRaw);
-            $logRaw = adminUpdateFetch($src['log']);
-            $item = [
-                'remote' => preg_match('/^\d+(?:\.\d+){1,3}$/', $remote) ? $remote : '',
-                'log' => $logRaw !== false ? adminUpdateLogLines((string)$logRaw) : [],
-                'checked_at' => time(),
-            ];
-            $cache[$channel] = $item;
-            adminUpdateWriteJson(adminUpdateCacheFile(), $cache);
-        }
-    }
 
     $remote = (string)($item['remote'] ?? '');
     $available = $remote !== '' && version_compare($remote, $local, '>');
     
-    if (session_status() === PHP_SESSION_NONE) {
-        @session_start();
-    }
     $ignored = (($_SESSION['admin_update_dismissed'][$channel] ?? '') === $remote);
 
     return $status = [
@@ -133,5 +118,42 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST'
     $newChannel = ($_POST['new_channel'] ?? '') === 'testing' ? 'testing' : 'stable';
     @file_put_contents(adminUpdateRoot() . '/channel.txt', $newChannel, LOCK_EX);
     header('Location: admin.php');
+    exit;
+}
+
+/* فحص التحديثات يدوياً عبر AJAX */
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST'
+    && ($_POST['admin_update_notice_action'] ?? '') === 'check_updates') {
+    header('Content-Type: application/json');
+    if (!function_exists('csrfValidate') || !csrfValidate()) {
+        echo json_encode(['status' => 'error', 'message' => 'CSRF Error']);
+        exit;
+    }
+    $channel = adminUpdateChannel();
+    $src = adminUpdateSources($channel);
+    $remoteRaw = adminUpdateFetch($src['version']);
+    if ($remoteRaw === false) {
+        echo json_encode(['status' => 'error', 'message' => 'تعذر الاتصال بخادم التحديث (GitHub).']);
+        exit;
+    }
+    $remote = trim($remoteRaw);
+    $logRaw = adminUpdateFetch($src['log']);
+    $item = [
+        'remote' => preg_match('/^\d+(?:\.\d+){1,3}$/', $remote) ? $remote : '',
+        'log' => $logRaw !== false ? adminUpdateLogLines((string)$logRaw) : [],
+        'checked_at' => time(),
+    ];
+    $cache = adminUpdateReadJson(adminUpdateCacheFile());
+    $cache[$channel] = $item;
+    adminUpdateWriteJson(adminUpdateCacheFile(), $cache);
+
+    $local = adminUpdateLocalVersion();
+    $has_update = $item['remote'] !== '' && version_compare($item['remote'], $local, '>');
+
+    echo json_encode([
+        'status' => 'success',
+        'has_update' => $has_update,
+        'remote_version' => $item['remote']
+    ]);
     exit;
 }

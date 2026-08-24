@@ -288,3 +288,93 @@ function startAjaxUpdate() {
     </div>
 </div>
 <?php endif; ?>
+
+<style>
+.pro-toast {
+    position: fixed;
+    top: 30px;
+    left: 50%;
+    transform: translateX(-50%) translateY(-50px);
+    background: #0f172a;
+    color: #e2e8f0;
+    padding: 12px 24px;
+    border-radius: 8px;
+    border: 1px solid rgba(255,255,255,0.1);
+    box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+    z-index: 9999999;
+    opacity: 0;
+    transition: all 0.3s cubic-bezier(0.68, -0.55, 0.265, 1.55);
+    font-size: 0.85rem;
+    font-weight: bold;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    pointer-events: none;
+}
+.pro-toast.show { transform: translateX(-50%) translateY(0); opacity: 1; }
+.pro-toast-success { border-bottom: 2px solid #10b981; }
+.pro-toast-success i { color: #10b981; }
+.pro-toast-error { border-bottom: 2px solid #ef4444; }
+.pro-toast-error i { color: #ef4444; }
+</style>
+
+<div id="proToast" class="pro-toast">
+    <i id="proToastIcon" class="fas fa-info-circle"></i>
+    <span id="proToastText"></span>
+</div>
+
+<script>
+function proShowToast(msg, type) {
+    var toast = document.getElementById('proToast');
+    var text = document.getElementById('proToastText');
+    var icon = document.getElementById('proToastIcon');
+    
+    toast.className = 'pro-toast';
+    toast.classList.add('pro-toast-' + type);
+    
+    if(type === 'success') icon.className = 'fas fa-check-circle';
+    else if(type === 'error') icon.className = 'fas fa-exclamation-circle';
+    else icon.className = 'fas fa-info-circle';
+    
+    text.innerText = msg;
+    toast.classList.add('show');
+    
+    setTimeout(function() { toast.classList.remove('show'); }, 4000);
+}
+
+function checkForUpdatesAjax() {
+    var icon = document.getElementById('checkUpdatesIcon');
+    if(icon) icon.classList.add('fa-spin');
+    
+    var fd = new FormData();
+    fd.append('csrf_token', '<?= htmlspecialchars($_SESSION['csrf_token'] ?? '', ENT_QUOTES, 'UTF-8') ?>');
+    fd.append('admin_update_notice_action', 'check_updates');
+
+    fetch('admin.php', {
+        method: 'POST',
+        body: fd
+    }).then(res => res.json()).then(data => {
+        if(icon) icon.classList.remove('fa-spin');
+        if (data.status === 'success') {
+            if (data.has_update) {
+                proShowToast('تم العثور على تحديث جديد (v' + data.remote_version + ')! جاري عرض الشريط...', 'success');
+                setTimeout(function(){ window.location.reload(); }, 1500);
+            } else {
+                proShowToast('نظامك هو الأحدث! لا توجد تحديثات جديدة حالياً.', 'success');
+                // إذا كان الشريط ظاهراً ولكنه لم يعد هناك تحديث (تطابق الإصدارات)، نخفيه فوراً
+                var banner = document.getElementById('proUpdateBannerWrap');
+                if (banner) {
+                    banner.style.transition = 'opacity 0.5s ease';
+                    banner.style.opacity = '0';
+                    setTimeout(function(){ banner.style.display = 'none'; }, 500);
+                }
+            }
+        } else {
+            proShowToast(data.message || 'حدث خطأ غير متوقع.', 'error');
+        }
+    }).catch(err => {
+        if(icon) icon.classList.remove('fa-spin');
+        proShowToast('فشل الاتصال بالخادم. يرجى المحاولة لاحقاً.', 'error');
+    });
+}
+</script>

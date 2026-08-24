@@ -61,6 +61,11 @@
   <span class="tbtitle" id="tbTitle"><?= $t["dashboard_word"] ?? "لوحة التحكم" ?></span>
   <div class="tbr">
 
+    <!-- Check Updates Button -->
+    <button class="mode-toggle" id="checkUpdatesBtn" onclick="checkForUpdatesAjax()" title="البحث عن تحديثات" aria-label="البحث عن تحديثات" style="color: var(--t3);">
+      <i class="fas fa-sync-alt" id="checkUpdatesIcon"></i>
+    </button>
+
     <!-- Music Mini Player -->
     <div class="music-p-mini" onclick="toggleAdminMusic()" title="<?= htmlspecialchars($t["tip_music"] ?? "إيقاف / تشغيل موسيقى الخلفية") ?>">
         <i class="fas fa-music" style="color:var(--t3); font-size:0.8rem;"></i>
