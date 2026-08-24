@@ -1964,6 +1964,8 @@ function openPlayerChannel(ch){
   // مرجع القناة للوسيط — يُستعمل إن فشل بثّ TS بسبب CORS من المصدر
   PL.streamRef=(ch&&ch.id)?{q:'ch',id:ch.id}:null;
   PL._tsRestreamTried=false;
+  PL._hlsNetRetry=0; PL._hlsMediaRetry=0; PL._hlsHardRetry=0;
+  PL._hlsFirstSegment=false; PL._hlsStartupUntil=0;
   PL._compat4kTried=false;
   PL._compat4kActive=false;
   PL._compat4kRevives=0;
@@ -1998,6 +2000,8 @@ function openPlayerEpisode(idx){
      restream.php يميّز الحلقات بـ ?ep=<id>. */
   PL.streamRef=(ep&&ep.id)?{q:'ep',id:ep.id}:null;
   PL._tsRestreamTried=false;
+  PL._hlsNetRetry=0; PL._hlsMediaRetry=0; PL._hlsHardRetry=0;
+  PL._hlsFirstSegment=false; PL._hlsStartupUntil=0;
   PL._compat4kTried=false;
   PL._compat4kActive=false;
   PL._compat4kRevives=0;
@@ -2365,6 +2369,20 @@ async function _loadSubtitle(videoEl, subUrl){
    تُستخدم عندما تفشل محاولات الاسترداد الخفيفة. */
 var _hardReloadTimer=null, _hardReloadUrl='', _hardReloadSub='';
 function _hardReloadStream(url){
+  /* خلال تجهيز أول مقطع لا نعامل المشغل كقناة ميتة. نستدعي إعادة محاولة
+     واحدة بعد مهلة البداية بدلاً من عشرات عمليات destroy/create المتلاحقة. */
+  var _now=Date.now();
+  if(_hardReloadTimer) return;
+  if(PL.hls && !PL._hlsFirstSegment && _now<(PL._hlsStartupUntil||0)){
+    if(!PL._startupRetryTimer){
+      var _delay=Math.max(250,(PL._hlsStartupUntil||0)-_now);
+      PL._startupRetryTimer=setTimeout(function(){
+        PL._startupRetryTimer=null;
+        if(!PL._hlsFirstSegment && _hardReloadUrl===url) _hardReloadStream(url);
+      },_delay);
+    }
+    return;
+  }
   // إن استُنفدت محاولات الرابط الأساسي ويوجد رابط احتياطي لم يُستخدم بعد — بدّل إليه فوراً
   if(PL.backupUrl && !PL.usedBackup && url!==PL.backupUrl && (PL._hlsHardRetry||0)>=3){
     PL.usedBackup=true;
@@ -2376,12 +2394,12 @@ function _hardReloadStream(url){
   }
   // حدّ أقصى للمحاولات السريعة المتتالية قبل المباعدة الأطول
   PL._hlsHardRetry=(PL._hlsHardRetry||0)+1;
-  if(_hardReloadTimer)clearTimeout(_hardReloadTimer);
   // تباعد متزايد: 1ث، 2ث، 3ث ... بحد أقصى 8ث (يحاول للأبد بهدوء)
   const wait=Math.min(PL._hlsHardRetry,8)*1000;
   showBuf(true);
   if(PL._hlsHardRetry<=2) toast('إعادة تشغيل القناة...');
   _hardReloadTimer=setTimeout(function(){
+    _hardReloadTimer=null;
     const overlay=document.getElementById('playerOverlay');
     // لا نعيد إن أُغلق المشغل أو غيّر المستخدم القناة
     if(!overlay||!overlay.classList.contains('active'))return;
@@ -2403,19 +2421,29 @@ function _tsViaRestream(sref, subUrl, tries){
     .then(function(res){
       var j=res.j;
       if(res.s===202 && j.error==='starting'){
-        if((tries||0)<8){ setTimeout(function(){ _tsViaRestream(sref, subUrl, (tries||0)+1); }, (j.retry_after||2)*1000); }
-        else { showBuf(false); toast('تعذّر تجهيز البثّ عبر الخادم'); }
+        /* البث الحيّ الثقيل قد يحتاج عدة ثوانٍ لأول مقطع؛ نبقى على نفس
+           عملية FFmpeg واتصال المصدر الواحد، ولا نعيد تشغيلها كل مرة. */
+        if((tries||0)<35){
+          if((tries||0)===12) toast('ما زال البثّ قيد التجهيز…');
+          setTimeout(function(){ _tsViaRestream(sref, subUrl, (tries||0)+1); }, (j.retry_after||1)*1000);
+        }else{
+          showBuf(false);
+          toast('لم ينشئ الخادم أول مقطع للبث خلال المهلة');
+        }
         return;
       }
       if(!j.success || !j.url){
         showBuf(false);
         if(j.error==='restream_disabled') toast('إعادة البثّ غير مفعّلة — فعّلها من لوحة الإدارة');
         else if(j.error==='vod_quota')    toast('مساحة التحويل ممتلئة — أعد المحاولة لاحقاً');
-        else toast('تعذّر التشغيل عبر الخادم');
+        else toast(j.message||'تعذّر التشغيل عبر الخادم');
         return;
       }
-      // رابط m3u8 محليّ — يمرّ عبر مسار hls في initStream فينحلّ كل شيء
-      try{ initStream(j.url, subUrl||''); }catch(_){ showBuf(false); toast('خطأ في تشغيل بثّ TS'); return; }
+      /* الرابط أصبح محلياً وجاهزاً. نعلّم initStream بذلك كي يبدأ الفيديو
+         بوضع تشغيل مسموح من المتصفح حتى لو انتهت مهلة نقرة المستخدم
+         أثناء انتظار FFmpeg؛ ثم يعيد الصوت مباشرةً عند أول صورة. */
+      PL._restreamLocal=true;
+      try{ initStream(j.url, subUrl||''); }catch(_){ PL._restreamLocal=false; showBuf(false); toast('خطأ في تشغيل بثّ TS'); return; }
       // ══ نبضة إبقاء ══ بدونها يُنهي المنظّفُ الدوريّ العمليةَ بعد دقيقة
       // من آخر طلب، لأن المقاطع تصل من Apache لا من PHP فلا نشاط يُرى.
       _tsStopPing();
@@ -2446,11 +2474,14 @@ function _compat4kViaRestream(sref, subUrl, tries){
     .then(function(res){
       var j=res.j;
       if(res.s===202 && j.error==='starting'){
-        if((tries||0)<12){
-          setTimeout(function(){ _compat4kViaRestream(sref, subUrl, (tries||0)+1); }, (j.retry_after||2)*1000);
+        /* تحويل 4K إلى H.264 يحتاج زمناً أكبر من إعادة التغليف العادية،
+           لذلك ننتظر نفس العملية بدلاً من إلغائها وإطلاقها من جديد. */
+        if((tries||0)<90){
+          if((tries||0)===15) toast('جارٍ تحويل الفيديو إلى نسخة متوافقة…');
+          setTimeout(function(){ _compat4kViaRestream(sref, subUrl, (tries||0)+1); }, (j.retry_after||1)*1000);
         }else{
           showBuf(false);
-          toast('استغرق تجهيز النسخة المتوافقة وقتاً أطول من المتوقع');
+          toast('استغرق تحويل النسخة المتوافقة وقتاً أطول من المهلة');
         }
         return;
       }
@@ -2462,6 +2493,7 @@ function _compat4kViaRestream(sref, subUrl, tries){
       try{
         PL._tsRestreamTried=true;
         PL._compat4kActive=true;
+        PL._restreamLocal=true;
         initStream(j.url, subUrl||'');
       }catch(_){
         showBuf(false);
@@ -2482,6 +2514,31 @@ function _compat4kViaRestream(sref, subUrl, tries){
       },25000);
     })
     .catch(function(){ showBuf(false); toast('تعذّر الاتصال بخادم التحويل المتوافق'); });
+}
+/* فحص مبكر لدعم فيديو HLS. VLC يدعم HEVC وملفات 10-bit أكثر من أغلب
+   المتصفحات؛ لذلك لا ننتظر خطأ MSE ثم نعيد تحميل القناة نفسها. */
+function _hlsNeedsVideoCompat(levels){
+  if(!window.MediaSource || typeof MediaSource.isTypeSupported!=='function') return false;
+  levels=levels||[];
+  for(var i=0;i<levels.length;i++){
+    var lv=levels[i]||{}, vc=String(lv.videoCodec||'').trim();
+    if(!vc) continue;
+    var ac=String(lv.audioCodec||'').trim();
+    var combo='video/mp4; codecs="'+vc+(ac?','+ac:'')+'"';
+    var videoOnly='video/mp4; codecs="'+vc+'"';
+    if(!MediaSource.isTypeSupported(combo) && !MediaSource.isTypeSupported(videoOnly)) return true;
+  }
+  return false;
+}
+
+function _startVideoCompat(sref, subUrl, message){
+  if(!sref || !sref.id || PL._compat4kTried) return false;
+  PL._compat4kTried=true;
+  PL._tsRestreamTried=true;
+  showBuf(true);
+  toast(message||'جارٍ تجهيز نسخة متوافقة للمتصفح…');
+  _compat4kViaRestream(sref, subUrl||'', 0);
+  return true;
 }
 function initStream(url,subUrl){
   // نتذكّر الرابط الحالي حتى يعرف الاسترداد التلقائي ما يعيد تشغيله
@@ -2524,6 +2581,13 @@ function initStream(url,subUrl){
   }
 
   const fmt=detectFmt(url);showBuf(true);
+  /* بعد رد Restream، play() لم يعد داخل نطاق النقرة الأصلي في بعض
+     المتصفحات. بدء MSE مكتوماً يضمن ظهور الصورة، ثم نستعيد الصوت في
+     onplaying. لا يؤثر هذا في الكتم الذي اختاره المستخدم. */
+  var _startMutedForAutoplay=!!PL._restreamLocal && !PL.muted;
+  PL._hlsLocalStream=!!PL._restreamLocal;
+  PL._restreamLocal=false;
+  if(_startMutedForAutoplay) newV.muted=true;
 
   /* ══ إعادة البث الإلزامية عند تفعيلها ══
      مصدر IPTV ذو الاتصال الواحد لا يتحمل اتصالاً مباشراً لكل مشاهد.
@@ -2579,18 +2643,21 @@ function initStream(url,subUrl){
            كل القيود أُزيلت: لا سقف للجودة، لا سقف للسرعة، لا سقف للمخزن.
            المشغّل يأخذ أعلى جودة متاحة ويستهلك كامل سرعة الاتصال. */
 
-        // ── المخزن: إعدادات احترافية عالمية للاستقرار بدون تقطيع ──
-        maxBufferLength: 30,
-        maxMaxBufferLength: 60,
-        maxBufferSize: 60 * 1000 * 1000,
-        backBufferLength: 30,
-        maxBufferHole: 1.0,               // تسامح أكبر مع فجوات البث
+        // ── مخزن قصير ومنضبط: يبدأ سريعاً ثم يحافظ على هامش أمان ──
+        maxBufferLength: 15,
+        maxMaxBufferLength: 30,
+        maxBufferSize: 40 * 1000 * 1000,
+        backBufferLength: 20,
+        maxBufferHole: 0.8,
 
-        // ══ مزامنة البث الحيّ — استقرار عالي جداً ══
-        liveSyncDurationCount: 7,         // الابتعاد قليلاً عن حافة البث المباشر لامتصاص التذبذبات
-        liveMaxLatencyDurationCount: 20,  // أقصى تأخير مسموح قبل القفز للأمام (واسع جداً)
+        /* قائمة Restream تنتج مقاطع 4 ثوانٍ. العدّ السابق (7 مقاطع)
+           كان يضع المشغل 28 ثانية خلف البث؛ لذلك كان VLC يبدأ فوراً
+           بينما صفحة الموقع تنتظر. نبدأ من مقطع واحد آمن (4 ثوانٍ). */
+        liveSyncDuration: 2.5,
+        liveMaxLatencyDuration: 12,
+        initialLiveManifestSize: 1,
         liveDurationInfinity: true,
-        maxLiveSyncPlaybackRate: 1.0,     // ← يمنع تسريع التشغيل الذي يشوّه الصوت أو يسبب تقطيع
+        maxLiveSyncPlaybackRate: 1.0,     // يمنع تسريع الصوت عند تعافي البث
 
         // ── الجودة: أعلى مستوى دائماً ──
         capLevelToPlayerSize: true,
@@ -2608,7 +2675,9 @@ function initStream(url,subUrl){
         testBandwidth: true,
 
         // ── التحميل: متوازٍ وسريع ومقاوم للانقطاعات ──
-        startFragPrefetch: false,
+        /* نجلب أول مقطع حال تحليل القائمة بدلاً من انتظار دورة ثانية
+           من حالة الفيديو؛ مهم تحديداً عند وصول رابط Restream بالـfetch. */
+        startFragPrefetch: true,
         progressive: false,
         fragLoadingMaxRetry: 6,
         fragLoadingRetryDelay: 1000,
@@ -2617,14 +2686,26 @@ function initStream(url,subUrl){
         manifestLoadingRetryDelay: 500,
         levelLoadingMaxRetry: 10,
         levelLoadingRetryDelay: 500,
-        maxStarvationDelay: 8,            // مقاومة التوقف المؤقت (Starvation)
-        maxLoadingDelay: 6,
+        maxStarvationDelay: 4,
+        maxLoadingDelay: 4,
         highBufferWatchdogPeriod: 2,
         nudgeMaxRetry: 10,
       });
+      /* نافذة تجهيز آمنة للبث الحيّ: لا يبدأ حارس التوقف قبل وصول أول
+         مقطع فعلي من HLS المحلي. */
+      PL._hlsFirstSegment=false;
+      PL._hlsStartupUntil=Date.now()+18000;
       PL.hls.attachMedia(newV);
       PL.hls.loadSource(url);
       PL.hls.on(Hls.Events.MANIFEST_PARSED,(e,data)=>{
+        /* نحكم من بيانات القائمة نفسها قبل أن يرفض MediaSource المقاطع.
+           هذا يمنع تكرار «إعادة تشغيل القناة» عندما يكون الفيديو HEVC
+           أو H.264 بمستوى لا يدعمه جهاز المشاهد. */
+        if(!PL._compat4kActive &&
+           _hlsNeedsVideoCompat((data&&data.levels)||PL.hls.levels) &&
+           _startVideoCompat(PL.streamRef, subUrl||'', 'ترميز الفيديو غير مدعوم — جارٍ تجهيز نسخة متوافقة…')){
+          return;
+        }
         /* ══ مطابقة الجودة المختارة في لوحة الإدارة ══
            حقل «الجودة» في تعديل القناة كان يُحفَظ ويصل إلى المتصفح
            (الاستعلامات تستخدم ch.* فالعمود ضمنها) — لكن هذا السطر كان
@@ -2659,11 +2740,20 @@ function initStream(url,subUrl){
       // نبدأ التشغيل أيضاً عند أول جزء جاهز (أيّهما أسبق)
       PL.hls.on(Hls.Events.FRAG_LOADED,()=>{ if(newV.paused && !PL.userPaused) newV.play().catch(()=>{}); });
       // ══ استرداد تلقائي قوي — يعيد تشغيل القناة بالكامل عند توقفها، بلا خروج يدوي ══
-      PL._hlsNetRetry=0;   // عداد أخطاء الشبكة
-      PL._hlsMediaRetry=0; // عداد أخطاء الميديا
-      PL._hlsHardRetry=0;  // عداد إعادة البناء الكاملة
+      /* العدادات تُصفّر عند وصول أول مقطع ناجح فقط. تصفيرها هنا مع كل
+         initStream كان يجعل كل إعادة تشغيل تبدو كأنها المحاولة الأولى. */
       PL.hls.on(Hls.Events.ERROR,(e,d)=>{
         if(!d.fatal){return;} // غير القاتلة يعالجها hls.js وحده
+        /* رابط Restream محلي وموجود، لكن hls.js قد يبلّغ عن خطأ شبكة
+           عابر بين كتابة القائمة وظهور أول مقطع. لا نهدم المشغل هنا. */
+        if(PL._hlsLocalStream && !PL._hlsFirstSegment &&
+           Date.now()<(PL._hlsStartupUntil||0) &&
+           String(d.details||'')!=='bufferAddCodecError' &&
+           String(d.details||'')!=='bufferIncompatibleCodecsError' &&
+           String(d.details||'')!=='manifestIncompatibleCodecsError'){
+          try{ PL.hls.startLoad(); }catch(_){}
+          return;
+        }
         /* خطأ codec قاتل: لا نعيد تحميل المصدر نفسه لأن ذلك يخلق دائرة
            "جارٍ التحميل". نطلب نسخة H.264/1080p مرة واحدة فقط. */
         var _codecDetail=String(d.details||'');
@@ -2677,12 +2767,8 @@ function initStream(url,subUrl){
           toast('النسخة المتوافقة لم تستطع العمل في هذا المتصفح');
           return;
         }
-        if(_codecFatal && PL.streamRef && PL.streamRef.id>0 && !PL._compat4kTried){
-          PL._compat4kTried=true;
-          PL._tsRestreamTried=true;
-          showBuf(true);
-          toast('ترميز 4K غير مدعوم — جارٍ تجهيز نسخة متوافقة…');
-          _compat4kViaRestream(PL.streamRef, subUrl||'', 0);
+        if(_codecFatal &&
+           _startVideoCompat(PL.streamRef, subUrl||'', 'ترميز الفيديو غير مدعوم — جارٍ تجهيز نسخة متوافقة…')){
           return;
         }
         // ── تبديل ذكي سريع: إن فشل تحميل القائمة/الـ manifest الأساسي كلياً ووُجد رابط احتياطي، انتقل فوراً ──
@@ -2720,45 +2806,49 @@ function initStream(url,subUrl){
         }
 
         if(d.type===Hls.ErrorTypes.NETWORK_ERROR){
+          /* hls.js يملك آلية إعادة محاولة داخلية؛ نعطيه ثلاث محاولات
+             خفيفة ولا نهدم عنصر الفيديو أو نعيد طلب Restream السليم. */
           showBuf(true);
           PL._hlsNetRetry++;
           if(PL._hlsNetRetry<=3){
             try{ PL.hls.startLoad(); }catch(_){}
-          } else {
-            _hardReloadStream(url);
+            return;
           }
+          showBuf(false);
+          toast('تعذّر استلام مقاطع البث من الخادم');
+          return;
         } else if(d.type===Hls.ErrorTypes.MEDIA_ERROR){
           showBuf(true);
           PL._hlsMediaRetry++;
           try{
-            // محاولة إصلاح خفيفة أولاً؛ عند تكرارها فالترميز نفسه غير
-            // مناسب لـ MSE ونحوّله إلى H.264/AAC بدل إعادة نفس الرابط.
-            if(PL._hlsMediaRetry<=1){
+            if(PL._hlsMediaRetry===1){
               PL.hls.recoverMediaError();
-            }else if(PL.streamRef && PL.streamRef.id>0 && !PL._compat4kTried){
-              PL._compat4kTried=true;
-              PL._tsRestreamTried=true;
-              toast('جارٍ تجهيز نسخة متوافقة للبث…');
-              _compat4kViaRestream(PL.streamRef, subUrl||'', 0);
-            }else{
-              _hardReloadStream(url);
+              return;
             }
-          }catch(_){
-            if(PL.streamRef && PL.streamRef.id>0 && !PL._compat4kTried){
-              PL._compat4kTried=true;
-              PL._tsRestreamTried=true;
-              _compat4kViaRestream(PL.streamRef, subUrl||'', 0);
-            }else{
-              _hardReloadStream(url);
-            }
-          }
+          }catch(_){}
+          if(_startVideoCompat(PL.streamRef, subUrl||'', 'جارٍ تجهيز نسخة متوافقة للبث…')) return;
+          showBuf(false);
+          toast('تعذّر فك ترميز فيديو البث في هذا الجهاز');
+          return;
         } else {
-          // أي خطأ قاتل آخر: إعادة بناء كاملة
-          _hardReloadStream(url);
+          /* لا توجد إعادة بناء تلقائية للرابط المحلي: ذلك كان سبب الحلقة.
+             نجرب توافق الفيديو مرة واحدة، ثم نعرض السبب فقط. */
+          if(!PL._hlsFirstSegment &&
+             _startVideoCompat(PL.streamRef, subUrl||'', 'جارٍ تجهيز نسخة متوافقة للبث…')){
+            return;
+          }
+          showBuf(false);
+          toast('تعذّر تشغيل قائمة البث على هذا الجهاز');
+          return;
         }
       });
       // عند نجاح تحميل أي مقطع، نصفّر كل العدّادات (البث تعافى)
-      PL.hls.on(Hls.Events.FRAG_BUFFERED,()=>{ PL._hlsNetRetry=0; PL._hlsMediaRetry=0; PL._hlsHardRetry=0; });
+      PL.hls.on(Hls.Events.FRAG_BUFFERED,()=>{
+        PL._hlsFirstSegment=true;
+        PL._hlsLocalStream=false;
+        PL._hlsStartupUntil=0;
+        PL._hlsNetRetry=0; PL._hlsMediaRetry=0; PL._hlsHardRetry=0;
+      });
       // ══ حارس البث الحيّ: يعيد الصوت لطبيعته دون تحديث الصفحة ══
       if(PL._liveGuard){ clearInterval(PL._liveGuard); PL._liveGuard=null; }
       PL._liveGuard=setInterval(function(){
@@ -2910,7 +3000,15 @@ function initStream(url,subUrl){
   newV.volume=PL.vol;newV.muted=PL.muted;
   newV.ontimeupdate=updateProgress;
   newV.onwaiting=()=>showBuf(true);
-  newV.onplaying=()=>{showBuf(false);setPlayIcon(false);PL.userPaused=false;PL._seekErrRetry=0;};
+  newV.onplaying=()=>{
+    showBuf(false);setPlayIcon(false);PL.userPaused=false;PL._seekErrRetry=0;
+    if(_startMutedForAutoplay){
+      _startMutedForAutoplay=false;
+      newV.muted=!!PL.muted;
+      newV.volume=PL.vol;
+      if(typeof _syncVolUI==='function') _syncVolUI();
+    }
+  };
   newV.onpause=()=>setPlayIcon(true);
   newV.onloadeddata=()=>showBuf(false);
   /* نُخفي مؤشر التحميل بمجرد أن تصبح أول صورة جاهزة — أبكر من loadeddata */
@@ -2961,6 +3059,13 @@ function initStream(url,subUrl){
       return;
     }
 
+    /* خطأ عنصر الفيديو قبل أول مقطع HLS قد يكون رفض التشغيل التلقائي
+       أو تهيئة MediaSource، لا فشل الرابط. نترك hls.js يكمل التحميل
+       بدل تبديل/إعادة تشغيل القناة السليمة. */
+    if(PL.hls && !PL._hlsFirstSegment && Date.now()<(PL._hlsStartupUntil||0)){
+      showBuf(true);
+      return;
+    }
     showBuf(false);
     if(PL.backupUrl && !PL.usedBackup && url!==PL.backupUrl){
       PL.usedBackup=true;
@@ -2986,6 +3091,7 @@ function initStream(url,subUrl){
 function destroyPlayer(){
   if(typeof _tsStopPing==='function') _tsStopPing();   // نوقف نبضة الوسيط
   if(typeof _compat4kStopPing==='function') _compat4kStopPing();
+  if(PL._startupRetryTimer){ clearTimeout(PL._startupRetryTimer); PL._startupRetryTimer=null; }
   if(PL._liveGuard){ clearInterval(PL._liveGuard); PL._liveGuard=null; }
   if(PL.hls){try{PL.hls.destroy();}catch(e){}PL.hls=null;}
   if(PL.dash){try{PL.dash.reset();}catch(e){}PL.dash=null;}
@@ -3606,7 +3712,29 @@ function _watchdogStart(){
     const overlay=document.getElementById('playerOverlay');
     if(!v||!overlay||!overlay.classList.contains('active')){clearInterval(_watchdogInt);_watchdogInt=null;return;}
     if(v.paused||v.ended){_stallTicks=0;return;}
+    // انتظار أول مقطع HLS مرحلة طبيعية، وليس توقفاً للقناة.
+    if(PL.hls && !PL._hlsFirstSegment && Date.now()<(PL._hlsStartupUntil||0)){
+      _stallTicks=0; _prev=v.currentTime; return;
+    }
     // القناة "ماتت" تماماً (readyState=0 ومستمرة) — نعيد تشغيلها تلقائياً
+    if(PL.hls){
+      /* HLS له مدير أخطاء خاص به. لا ندمّر المشغل من الحارس العام،
+         لأن ذلك كان يعيد نفس قائمة Restream السليمة في حلقة. */
+      var _stalled=(v.readyState===0 || (v.currentTime===_prev&&v.readyState<3));
+      if(_stalled){
+        _stallTicks++;
+        if(_stallTicks===3){ try{ PL.hls.startLoad(); }catch(_){} }
+        if(_stallTicks>=8){
+          _stallTicks=0;
+          if(!PL._hlsStallNoticeAt || Date.now()-PL._hlsStallNoticeAt>30000){
+            PL._hlsStallNoticeAt=Date.now();
+            toast('البث ينتظر مقطعاً جديداً من المصدر…');
+          }
+        }
+      }else _stallTicks=0;
+      _prev=v.currentTime;
+      return;
+    }
     if(v.readyState===0){
       _stallTicks++;
       if(_stallTicks>=4){_stallTicks=0;const u=_lastUrl||_hardReloadUrl;if(u)_hardReloadStream(u);}
@@ -3614,11 +3742,6 @@ function _watchdogStart(){
     }
     if(v.currentTime===_prev&&v.readyState<3){
       _stallTicks++;
-      // المرحلة 1 (تجمّد قصير): استرداد خفيف عبر hls.js دون إعادة بناء — بلا قفزة مرئية
-      if(_stallTicks===3 && PL.hls){
-        try{ PL.hls.startLoad(); }catch(_){}
-      }
-      // المرحلة 2 (تجمّد مستمر): إعادة تشغيل كاملة تلقائية لا تستسلم
       if(_stallTicks>=6){_stallTicks=0;const u=_lastUrl||_hardReloadUrl;if(u)_hardReloadStream(u);}
     }else _stallTicks=0;
     _prev=v.currentTime;

@@ -223,7 +223,7 @@ function rsVodUsedBytes(): int
     $root = rsRootFor('e0');
     if (!is_dir($root)) return 0;
     $n = 0;
-    foreach (glob($root . '/*/*.ts') ?: [] as $f) $n += (int)@filesize($f);
+    foreach (glob($root . '/*/*.{ts,m4s}', GLOB_BRACE) ?: [] as $f) $n += (int)@filesize($f);
     return $n;
 }
 
@@ -247,6 +247,25 @@ function rsPublicUrl(string $key): string {
 function rsDir(string $key): string     { return rsRootFor($key) . '/' . rsSlug($key); }
 function rsIndex(string $key): string   { return rsDir($key) . '/index.m3u8'; }
 function rsPidFile(string $key): string { return rsDir($key) . '/.pid'; }
+
+/* تغيير مسار إخراج FFmpeg يجب أن يعيد تشغيل العمليات القديمة مرة واحدة،
+   وإلا يبقى المشاهد على عملية تعمل بالإعداد السابق حتى انتهاء الخمول. */
+function rsPipelineVersion(): string { return 'hls-browser-fmp4-v3'; }
+function rsPipelineFile(string $key): string { return rsDir($key) . '/.pipeline'; }
+function rsPipelineCurrent(string $key): bool {
+    return trim((string)@file_get_contents(rsPipelineFile($key))) === rsPipelineVersion();
+}
+
+/* لا نعلن جاهزية HLS من وجود القائمة وحده: قد تُكتب القائمة قبل أول
+   مقطع fMP4 بلحظة، فيحصل المتصفح على 404 ويبدأ دورة إعادة تشغيل وهمية. */
+function rsReady(string $key): bool {
+    $idx = rsIndex($key);
+    if (!is_file($idx) || (int)@filesize($idx) <= 40) return false;
+    foreach (glob(rsDir($key) . '/s*.{m4s,ts}', GLOB_BRACE) ?: [] as $seg) {
+        if ((int)@filesize($seg) > 0) return true;
+    }
+    return false;
+}
 function rsHitFile(string $key): string { return rsDir($key) . '/.hit'; }
 
 /** هل يُسمح لـ PHP بتشغيل أوامر النظام؟ */
@@ -262,6 +281,33 @@ function rsCanExec(): bool
     return $ok = true;
 }
 
+/* فحص خفيف للفيديو قبل تشغيل القناة. لا نعيد ترميز H.264/8-bit السليم،
+   لكننا نحول HEVC وAV1 وMPEG-2 و10-bit و4K إلى ملف شخصي يدعمه MSE. */
+function rsVideoNeedsTranscode(string $url): bool {
+    static $memo = [];
+    if (isset($memo[$url])) return $memo[$url];
+
+    $timeout = is_executable('/usr/bin/timeout') ? '/usr/bin/timeout 8 ' :
+               (is_executable('/bin/timeout') ? '/bin/timeout 8 ' : '');
+    $cmd = $timeout . 'ffprobe -v error -select_streams v:0'
+         . ' -show_entries stream=codec_name,pix_fmt,width,height'
+         . ' -of json ' . escapeshellarg($url) . ' 2>/dev/null';
+    $raw = @shell_exec($cmd);
+    $data = is_string($raw) ? json_decode($raw, true) : null;
+    $stream = is_array($data) && !empty($data['streams'][0]) ? $data['streams'][0] : [];
+    if (!is_array($stream) || empty($stream['codec_name'])) return $memo[$url] = false;
+
+    $codec = strtolower((string)($stream['codec_name'] ?? ''));
+    $pix   = strtolower((string)($stream['pix_fmt'] ?? ''));
+    $w     = (int)($stream['width'] ?? 0);
+    $h     = (int)($stream['height'] ?? 0);
+
+    return $memo[$url] = (
+        $codec !== 'h264' ||
+        ($pix !== '' && $pix !== 'yuv420p') ||
+        $w > 1920 || $h > 1080
+    );
+}
 /** هل العملية حيّة؟ */
 function rsAlive(int $pid): bool {
     if ($pid < 2) return false;
@@ -335,7 +381,13 @@ function rsStart(string $key, string $srcUrl, bool $compatVideo = false): array 
        خطأ صريح هنا يوفّر ساعات في المكان الخطأ. */
     if (!rsCanExec()) return ['ok' => false, 'error' => 'shell_disabled'];
 
-    if (rsRunning($key)) { rsTouch($key); return ['ok' => true, 'started' => false]; }
+    /* العملية الموجودة قد تكون نشأت قبل إصلاح مسار TS/HLS. نبدلها
+       تلقائياً عند أول مشاهدة، ثم تبقى النسخة الجديدة مشتركة للجميع. */
+    if (rsRunning($key) && !rsPipelineCurrent($key)) rsStop($key);
+    if (rsRunning($key)) {
+        rsTouch($key);
+        return ['ok' => true, 'started' => false, 'pending' => !rsReady($key)];
+    }
 
     // تنظيف بقايا عملية ميتة قبل البدء
     if (is_dir(rsDir($key))) {
@@ -376,12 +428,16 @@ function rsStart(string $key, string $srcUrl, bool $compatVideo = false): array 
         // طلب آخر يشغّلها الآن — ننتظر ظهور القائمة بدل تكرار العملية
         fclose($lock);
         for ($i = 0; $i < 60; $i++) {
-            if (is_file(rsIndex($key))) return ['ok' => true, 'started' => false];
+            if (rsReady($key)) return ['ok' => true, 'started' => false];
             usleep(200000);
         }
         return ['ok' => false, 'error' => 'start_timeout'];
     }
-    if (rsRunning($key)) { flock($lock, LOCK_UN); fclose($lock); rsTouch($key); return ['ok'=>true,'started'=>false]; }
+    if (rsRunning($key) && !rsPipelineCurrent($key)) rsStop($key);
+    if (rsRunning($key)) {
+        flock($lock, LOCK_UN); fclose($lock); rsTouch($key);
+        return ['ok'=>true,'started'=>false,'pending'=>!rsReady($key)];
+    }
 
     $idx = rsIndex($key);
     $log = $dir . '/.log';
@@ -396,6 +452,9 @@ function rsStart(string $key, string $srcUrl, bool $compatVideo = false): array 
        عند انتهاء المهلة فنبضته تتلقّى 410 ويُعيد المشغّل التشغيل تلقائياً
        — انقطاع ثوانٍ مرة كل 12 ساعة مقابل ضمان ألا تتراكم عمليات يتيمة. */
     $isVod   = rsIsVod($key);
+    /* قرار الترميز يُتخذ على الخادم من خصائص المصدر، لا من تخمينات
+       JavaScript. يظل H.264/1080p السليم سريعاً بنسخ الفيديو. */
+    $transcodeVideo = $compatVideo || rsVideoNeedsTranscode($srcUrl);
     $maxLife = max(600, (int)rsCfg('RESTREAM_MAX_LIFE', 43200));
     $timeout = '';
     // -k يرسل SIGKILL بعد 10 ثوانٍ إن تجاهل ffmpeg إشارة الإنهاء اللطيفة
@@ -406,25 +465,28 @@ function rsStart(string $key, string $srcUrl, bool $compatVideo = false): array 
     }
 
     $cmd = $timeout . 'ffmpeg -hide_banner -loglevel error -nostdin'
+         /* HLS/TS القادم من بعض المزودين يحمل PTS ناقصاً أو متقطعاً.
+            VLC يتسامح معه، بينما MSE في المتصفح يرفض المقطع بلا صورة. */
+         . ' -fflags +genpts+discardcorrupt'
          // مهلات تمنع تعليق العملية إلى الأبد عند سقوط المصدر
          . ' -rw_timeout 15000000 -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5'
          . ' -user_agent ' . escapeshellarg('VLC/3.0.20 LibVLC/3.0.20')
          . ' -i ' . escapeshellarg($srcUrl)
          . ' -map 0:v:0 -map 0:a:0?'
-         /* الوضع العادي ينسخ الفيديو لتقليل استهلاك الخادم. أما وضع التوافق
-            فيُطلب فقط بعد أن يرفض المتصفح ترميز الفيديو (غالباً HEVC/4K)،
-            وينتج H.264 يطابق دعم HLS الواسع بدقة قصوى 1080p. */
-         . ($compatVideo
-             ? ' -c:v libx264 -preset veryfast -crf 23 -maxrate 6500k -bufsize 13000k -pix_fmt yuv420p -vf ' . escapeshellarg("scale=w='min(1920,iw)':h=-2:flags=lanczos") . ' -g 100 -keyint_min 100 -sc_threshold 0'
+         /* نسخ H.264/1080p السليم سريع جداً. أما أي فيديو لا يفهمه
+            المتصفح فنحوّله هنا مرة واحدة لكل قناة، لا مرة لكل مستخدم. */
+         . ($transcodeVideo
+             ? ' -c:v libx264 -preset veryfast -crf 23 -maxrate 6500k -bufsize 13000k -pix_fmt yuv420p -vf ' . escapeshellarg("scale=w='min(1920,iw)':h=-2:flags=lanczos") . ' -g 50 -keyint_min 50 -sc_threshold 0'
              : ' -c:v copy')
          /* تحويل صوت ثابت للمتصفح: بعض مزوّدي IPTV يرسلون 44.1kHz أو
             طوابع زمنية متقطّعة داخل AC3/EAC3، فتسمع تقطيعاً أو تشويهاً.
             نعيد مزامنة الصوت ونوحّد العيّنة إلى 48kHz قبل AAC stereo. */
          . ' -c:a aac -b:a 192k -ac 2 -ar 48000 -af ' . escapeshellarg('aresample=async=1:min_hard_comp=0.100:first_pts=0')
-         /* hls_init_time=1 يجعل أول مقطع ثانيةً واحدة فقط ثم تعود المقاطع
-            إلى 4 ثوانٍ. قياساً: زمن ظهور أول قائمة ينزل من 4.2s إلى 2.1s
-            بلا خسارة في كفاءة النقل — المشاهد ينتظر نصف المدة. */
-         . ' -f hls -hls_time 4 -hls_init_time 1'
+         /* fMP4 يحوي معلومات البداية في init.mp4 ويعمل مباشرةً مع MSE
+            في Chrome/Edge/Safari. هذا يزيل اختلاف VLC المتسامح عن
+            المتصفحات مع مقاطع TS الحية. مقاطع ثانيتين تقلل زمن الاستجابة. */
+         . ' -f hls -hls_segment_type fmp4 -hls_time 2'
+         . ' -hls_fmp4_init_filename init.mp4'
          /* ══ الفارق الجوهري بين الفيلم والبثّ الحيّ ══
             الحيّ: قائمة متدحرجة من ست مقاطع تُحذف خلف المشاهد. لا معنى
                   للإرجاع في بثّ مباشر، والحذف يُبقي الذاكرة ثابتة.
@@ -434,10 +496,10 @@ function rsStart(string $key, string $srcUrl, bool $compatVideo = false): array 
                   زينةً لا تعمل. playlist_type=event يخبر المشغّل أن
                   المدة تنمو، فلا يعرض Infinity:NaN. */
          . ($isVod
-             ? ' -hls_list_size 0 -hls_playlist_type event -hls_flags append_list'
-             : ' -hls_list_size 6 -hls_flags delete_segments+append_list+omit_endlist')
+             ? ' -hls_list_size 0 -hls_playlist_type event -hls_flags independent_segments+append_list'
+             : ' -hls_list_size 5 -hls_flags independent_segments+delete_segments+append_list+omit_endlist')
          . ' -hls_allow_cache 0'
-         . ' -hls_segment_filename ' . escapeshellarg($dir . '/s%05d.ts')
+         . ' -hls_segment_filename ' . escapeshellarg($dir . '/s%05d.m4s')
          . ' ' . escapeshellarg($idx)
          . ' > ' . escapeshellarg($log) . ' 2>&1 & echo $!';
 
@@ -447,6 +509,7 @@ function rsStart(string $key, string $srcUrl, bool $compatVideo = false): array 
         return ['ok' => false, 'error' => 'spawn_failed'];
     }
     @file_put_contents(rsPidFile($key), (string)$pid);
+    @file_put_contents(rsPipelineFile($key), rsPipelineVersion());
     rsTouch($key);
 
     /* ── انتظار قصير ثم تسليم ──
@@ -456,11 +519,11 @@ function rsStart(string $key, string $srcUrl, bool $compatVideo = false): array 
        الموقع كله. إن لم تجهز في المهلة نُعيد "قيد التحضير" ويعيد العميل
        السؤال — العملية تكمل في الخلفية بلا أن يحجزها أحد.
        القياس: أول قائمة تظهر خلال ~2 ثانية مع hls_init_time=1. */
-    $waitMs   = 3500;
-    $stepMs   = 150;
+    $waitMs   = 900;
+    $stepMs   = 100;
     $ready    = false;
     for ($i = 0, $n = (int)($waitMs / $stepMs); $i < $n; $i++) {
-        if (is_file($idx) && filesize($idx) > 40) { $ready = true; break; }
+        if (rsReady($key)) { $ready = true; break; }
         if (!rsAlive($pid)) break;
         usleep($stepMs * 1000);
     }

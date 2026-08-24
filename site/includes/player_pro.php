@@ -1034,31 +1034,9 @@ function plainAudioWarning(codec) {
         // فحص ترميز الصوت بعد توفّر بيانات القائمة
         H.on(window.Hls.Events.MANIFEST_PARSED, function () { setTimeout(checkHlsAudio, 400); });
         H.on(window.Hls.Events.AUDIO_TRACKS_UPDATED, function () { setTimeout(checkHlsAudio, 200); });
-
-        /* hls.js يُطلق هذين عند رفض MediaSource للترميز — وهو أوضح
-           دليل ممكن على أن الصوت لن يعمل مهما انتظرنا. */
-        H.on(window.Hls.Events.ERROR, function (e, d) {
-          if (!d) return;
-          var det = String(d.details || '');
-          if (det === 'bufferAddCodecError' || det === 'bufferIncompatibleCodecsError' || det === 'manifestIncompatibleCodecsError') {
-            var mt = (d.mimeType || d.err && d.err.message || '');
-            if (/audio/i.test(mt) || UNPLAYABLE_AUDIO.test(mt)) {
-              warnAudio(mt || 'غير معروف');
-            } else if (!videoCompatWarned && !restreamActive &&
-                       !(typeof PL !== 'undefined' && PL && PL._compat4kTried)) {
-              videoCompatWarned = true;
-              var sref = currentStream();
-              if (sref.id > 0) {
-                restreamTries = 0;
-                say('ترميز فيديو 4K غير مدعوم في هذا المتصفح — جارٍ تجهيز نسخة متوافقة…');
-                tryRestream(sref, 'video', true);
-              } else {
-                say('ترميز الفيديو غير مدعوم في هذا المتصفح. جرّب VLC أو جهازاً يدعم HEVC.');
-              }
-            }
-          }
-        });
-      } catch (e) {}
+        /* الاسترداد والتحويل مملوكان لـ main_js.php حصراً. وجود معالج
+           ثانٍ هنا كان يطلب Restream بالتوازي ويبدّل المصدر أثناء تشغيله. */
+        H.on(window.Hls.Events.ERROR, function () {});      } catch (e) {}
     }
   }
 

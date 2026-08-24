@@ -141,7 +141,7 @@ if (!empty($r['pending'])) {
         'success'     => false,
         'error'       => 'starting',
         'message'     => 'جارٍ تجهيز القناة…',
-        'retry_after' => 2,
+        'retry_after' => 1,
         'url'         => $url,
     ], 202);
 }
