@@ -842,7 +842,8 @@
           if (j.error === 'vod_quota') {
             say('مساحة التحويل ممتلئة — أعد المحاولة بعد دقائق');
           } else if (j.error === 'restream_disabled') {
-            say('إصلاح الصوت غير مفعّل — فعّله من لوحة الإدارة');
+            window.__shsRestreamOn = false;
+            plainRestreamWarning(codec, compatVideo);
           } else {
             plainRestreamWarning(codec, compatVideo);
           }
@@ -916,7 +917,7 @@ function plainAudioWarning(codec) {
 
     // إن كان الوسيط متاحاً فالإصلاح ممكن؛ وإلا نكتفي بالتفسير
     var sref = currentStream();
-    if (sref.id > 0) { tryRestream(sref, codec, false); return; }
+    if (sref.id > 0 && window.__shsRestreamOn === true) { tryRestream(sref, codec, false); return; }
     plainAudioWarning(codec);
   }
 

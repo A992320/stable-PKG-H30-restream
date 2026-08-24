@@ -8,8 +8,23 @@
    ومن يفشل منها يُظهر سبباً واضحاً بلا جولة مهدورة إلى restream.php.
    الافتراضي عند غياب الإعداد: مفعّل (كما يفترض بقية النظام). */
 window.__shsRestreamOn = <?php
-    $__rs = isset($settings['restream_enabled'])
-        ? (string)$settings['restream_enabled'] : '1';
+    $__rs = '1';
+    global $settings;
+    if (isset($settings['restream_enabled'])) {
+        $__rs = (string)$settings['restream_enabled'];
+    } elseif (function_exists('cacheGet')) {
+        $cs = cacheGet('site_settings');
+        if (is_array($cs) && isset($cs['restream_enabled'])) {
+            $__rs = (string)$cs['restream_enabled'];
+        } else {
+            try {
+                $st = db()->prepare("SELECT setting_value FROM settings WHERE setting_key='restream_enabled'");
+                $st->execute();
+                $val = $st->fetchColumn();
+                if ($val !== false) $__rs = (string)$val;
+            } catch(Exception $e) {}
+        }
+    }
     echo ($__rs === '0' || strtolower($__rs) === 'false' || $__rs === 'off') ? 'false' : 'true';
 ?>;
 
@@ -2434,7 +2449,16 @@ function _tsViaRestream(sref, subUrl, tries){
       }
       if(!j.success || !j.url){
         showBuf(false);
-        if(j.error==='restream_disabled') toast('إعادة البثّ غير مفعّلة — فعّلها من لوحة الإدارة');
+        if(j.error==='restream_disabled') {
+            window.__shsRestreamOn = false;
+            if (typeof _hardReloadUrl !== 'undefined' && _hardReloadUrl) {
+                toast('الوسيط مطفأ — محاولة التشغيل المباشر…');
+                setTimeout(function(){ initStream(_hardReloadUrl, subUrl); }, 500);
+            } else {
+                toast('إعادة البثّ مطفأة، والقناة تعذّر تشغيلها مباشرة.');
+            }
+            return;
+        }
         else if(j.error==='vod_quota')    toast('مساحة التحويل ممتلئة — أعد المحاولة لاحقاً');
         else toast(j.message||'تعذّر التشغيل عبر الخادم');
         return;
@@ -2532,7 +2556,7 @@ function _hlsNeedsVideoCompat(levels){
 }
 
 function _startVideoCompat(sref, subUrl, message){
-  if(!sref || !sref.id || PL._compat4kTried) return false;
+  if(!window.__shsRestreamOn || !sref || !sref.id || PL._compat4kTried) return false;
   PL._compat4kTried=true;
   PL._tsRestreamTried=true;
   showBuf(true);

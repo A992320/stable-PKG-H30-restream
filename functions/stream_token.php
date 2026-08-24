@@ -170,6 +170,29 @@ function streamPublicUrl(string $url, string $baseUrl = ''): string
         return $url;
     }
 
+    // إذا كانت خاصية إعادة البث (الريستريم) مطفأة من اللوحة، نقوم بعرض الرابط المباشر
+    $rsEnabled = '1';
+    global $settings;
+    if (isset($settings['restream_enabled'])) {
+        $rsEnabled = (string)$settings['restream_enabled'];
+    } elseif (function_exists('cacheGet')) {
+        $cs = cacheGet('site_settings');
+        if (is_array($cs) && isset($cs['restream_enabled'])) {
+            $rsEnabled = (string)$cs['restream_enabled'];
+        } else {
+            try {
+                $st = db()->prepare("SELECT setting_value FROM settings WHERE setting_key='restream_enabled'");
+                $st->execute();
+                $val = $st->fetchColumn();
+                if ($val !== false) $rsEnabled = (string)$val;
+            } catch(Exception $e) {}
+        }
+    }
+    
+    if ($rsEnabled === '0' || strtolower($rsEnabled) === 'false' || $rsEnabled === 'off') {
+        return $url;
+    }
+
     // الروابط المحلية (ملفات مرفوعة على خادمك) لا تحتاج حماية
     if (!preg_match('#^https?://#i', $url)) {
         return $url;

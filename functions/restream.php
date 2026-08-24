@@ -127,6 +127,14 @@ function rsSetEnabled(bool $on): bool
         }
         // عند الإطفاء نُنهي كل ما يعمل فوراً بدل انتظار المنظّف
         if ($ok && !$on) rsStopAll();
+        
+        // إفراغ الكاش لتحديث حالة المشغل في الواجهة فوراً
+        if (function_exists('cacheDelete')) {
+            cacheDelete('site_settings');
+        } elseif (function_exists('settingsCacheBust')) {
+            settingsCacheBust();
+        }
+        
         return $ok;
     } catch (Throwable $e) {
         if (function_exists('logTo')) logTo('error', 'rsSetEnabled: ' . $e->getMessage());

@@ -158,6 +158,26 @@ function escA(s){return String(s==null?'':s).replace(/\\/g,'\\\\').replace(/'/g,
 function fmtSz(b){if(b>=1073741824)return(b/1073741824).toFixed(1)+' GB';if(b>=1048576)return(b/1048576).toFixed(1)+' MB';if(b>=1024)return(b/1024).toFixed(0)+' KB';return b+' B'}
 function al(id,msg,type){const icons={s:'check-circle',e:'exclamation-circle',i:'info-circle'};const cls={s:'al-s',e:'al-e',i:'al-i'};const el=$(id);if(!el)return;if(!msg){el.innerHTML='';return;}el.innerHTML=`<div class="al ${cls[type]||'al-i'}" style="margin:0"><i class="fas fa-${icons[type]||'info-circle'}"></i> ${msg}</div>`;}
 const titles={dashboard:'<?= $t["dashboard"] ?? "لوحة التحكم" ?>',categories:'<?= $t["categories"] ?? "الأقسام" ?>',channels:'<?= $t["channels"] ?? "القنوات" ?>','m3u-import':'استيراد M3U',xtream:'حساب Xtream',series:'<?= $t["series"] ?? "شاشتي" ?>',vupload:'<?= $t["upload"] ?? "رفع الأفلام" ?>',vmanage:'<?= $t["manage"] ?? "إدارة الفيديوهات" ?>','api-settings':'<?= $t["api_settings"] ?? "إعدادات API" ?>','site-settings':'<?= $t["settings"] ?? "إعدادات الموقع" ?>','change-password':'<?= $t["password"] ?? "كلمة المرور" ?>','system-tools':'<?= $t["tools"] ?? "صيانة النظام" ?>',backup:'<?= $t["backup"] ?? "النسخ الاحتياطي" ?>',users:'<?= $t["users"] ?? "إدارة المستخدمين" ?>','frontend-control':'التحكم بالواجهة الأمامية','general-settings':'الإعدادات العامة',subscriptions:'<?= addslashes($t["nav_plans"] ?? "خطط الاشتراك") ?>',coupons:'<?= addslashes($t["nav_coupons"] ?? "أكواد التفعيل") ?>',subscribers:'<?= addslashes($t["nav_subscribers"] ?? "المشتركون") ?>'};
+window.__shsRestreamOn = <?php
+    $__rs = '1';
+    global $settings;
+    if (isset($settings['restream_enabled'])) {
+        $__rs = (string)$settings['restream_enabled'];
+    } elseif (function_exists('cacheGet')) {
+        $cs = cacheGet('site_settings');
+        if (is_array($cs) && isset($cs['restream_enabled'])) {
+            $__rs = (string)$cs['restream_enabled'];
+        } else {
+            try {
+                $st = db()->prepare("SELECT setting_value FROM settings WHERE setting_key='restream_enabled'");
+                $st->execute();
+                $val = $st->fetchColumn();
+                if ($val !== false) $__rs = (string)$val;
+            } catch(Exception $e) {}
+        }
+    }
+    echo ($__rs === '0' || strtolower($__rs) === 'false' || $__rs === 'off') ? 'false' : 'true';
+?>;
 function S(id){document.querySelectorAll('.sec').forEach(s=>{s.classList.remove('on')});document.querySelectorAll('.si').forEach(s=>{s.classList.remove('on')});const sec=$(id);if(sec)sec.classList.add('on');$('tbTitle').textContent=titles[id]||'';document.querySelectorAll('.si').forEach(b=>{if(b.getAttribute('onclick')&&b.getAttribute('onclick').includes(`'${id}'`))b.classList.add('on')});
 sessionStorage.setItem('active_sec', id);
 
