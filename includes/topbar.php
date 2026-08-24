@@ -32,6 +32,7 @@
     <button class="si" onclick="S('subscribers');loadSubscribers();closeSidebar();addRipple(event,this)"><span class="si-ic"><i data-lucide="user-check" style="color:#4CC9F0"></i></span><?= $t["nav_subscribers"] ?? "المشتركون" ?></button>
     <!-- [SUBS-NAV-END] -->
     <div class="snl"><?= $t["nav_management"] ?? "الإدارة" ?></div>
+    <button class="si" onclick="window.location.href='update.php'"><span class="si-ic"><i data-lucide="refresh-cw"></i></span>التحديثات والنظام</button>
     <button class="si" onclick="S('api-settings');closeSidebar();addRipple(event,this)"><span class="si-ic"><i data-lucide="plug"></i></span><?= $t["api_settings"] ?? "إعدادات API" ?></button>
     <button class="si" onclick="S('site-settings');closeSidebar();addRipple(event,this)"><span class="si-ic"><i data-lucide="settings"></i></span><?= $t["settings"] ?? "إعدادات الموقع" ?></button>
     <button class="si" onclick="S('change-password');closeSidebar();addRipple(event,this)"><span class="si-ic"><i data-lucide="key"></i></span><?= $t["password"] ?? "كلمة المرور" ?></button>
