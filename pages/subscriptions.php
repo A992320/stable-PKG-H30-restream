@@ -55,7 +55,9 @@
   .sb-row-t{font-weight:700;color:var(--t1,#fff);font-size:.9rem}
   .sb-row-d{font-size:.75rem;color:var(--t3,#888);margin-top:3px;line-height:1.5}
   #planM input:-webkit-autofill,#planM input:-webkit-autofill:hover,#planM input:-webkit-autofill:focus{-webkit-text-fill-color:var(--t1,#fff);-webkit-box-shadow:0 0 0 1000px var(--bg3,#1f1f1f) inset;transition:background-color 9999s ease-out 0s}
-  </style>
+  .sb-currency-form{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+@media(max-width:700px){.sb-currency-row{align-items:flex-start}.sb-currency-form{width:100%;padding-inline-start:48px}.sb-currency-form .fs{flex:1;min-width:130px}.sb-currency-form .fi{flex:1;min-width:64px}}
+</style>
 
   <div class="shdr">
     <h1 class="stitle">
@@ -121,29 +123,35 @@
         <input type="number" id="setDefaultDevices" class="fi" min="1" max="10" value="1" style="width:86px;text-align:center"
                onchange="subsSaveSettings()" aria-label="<?= $t["default_device_limit"] ?? "الحد الافتراضي للأجهزة" ?>">
       </div>
-      <div class="sb-row">
+      <div class="sb-row sb-currency-row">
         <div style="width:48px;text-align:center;color:#F5A623;font-size:1.3rem"><i class="fas fa-coins"></i></div>
         <div style="flex:1">
           <div class="sb-row-t"><?= $t["currency"] ?? "العملة" ?></div>
           <div class="sb-row-d"><?= $t["currency_desc"] ?? "الرمز يظهر بجانب كل سعر في اللوحة وصفحات الاشتراك." ?></div>
         </div>
-        <select id="setCurrencyPreset" class="fs" style="width:150px" onchange="subsApplyCurrencyPreset()" aria-label="اختيار العملة">
-          <option value="USD|$">USD — $</option>
-          <option value="IQD|د.ع">IQD — د.ع</option>
-          <option value="SAR|ر.س">SAR — ر.س</option>
-          <option value="AED|د.إ">AED — د.إ</option>
-          <option value="EUR|€">EUR — €</option>
-          <option value="TRY|₺">TRY — ₺</option>
-          <option value="custom"><?= $t["currency_custom"] ?? "عملة مخصصة" ?></option>
-        </select>
-        <input type="text" id="setCurSymbol" class="fi" maxlength="8" style="width:70px;text-align:center"
-               placeholder="$" onchange="subsSaveSettings()" aria-label="رمز العملة">
-        <input type="text" id="setCurCode" class="fi" maxlength="8" style="width:78px;text-align:center"
-               placeholder="USD" onchange="subsSaveSettings()" aria-label="رمز العملة">
+        <form id="currencySaveForm" class="sb-currency-form" method="post" action="currency_save.php">
+          <?= csrfField() ?>
+          <select id="setCurrencyPreset" class="fs" style="width:150px" onchange="subsApplyCurrencyPreset()" aria-label="اختيار العملة">
+            <option value="USD|$">USD — $</option>
+            <option value="IQD|د.ع">IQD — د.ع</option>
+            <option value="SAR|ر.س">SAR — ر.س</option>
+            <option value="AED|د.إ">AED — د.إ</option>
+            <option value="EUR|€">EUR — €</option>
+            <option value="TRY|₺">TRY — ₺</option>
+            <option value="custom"><?= $t["currency_custom"] ?? "عملة مخصصة" ?></option>
+          </select>
+          <input type="text" id="setCurSymbol" name="currency_symbol" class="fi" maxlength="8" style="width:70px;text-align:center"
+                 placeholder="$" onchange="subsMarkCustomCurrency()" aria-label="رمز العملة" required>
+          <input type="text" id="setCurCode" name="currency_code" class="fi" maxlength="8" style="width:78px;text-align:center"
+                 placeholder="USD" onchange="subsMarkCustomCurrency()" aria-label="اسم العملة" required>
+          <button type="submit" class="sb-btn ok" id="saveCurrencyBtn" title="<?= htmlspecialchars($t['save_word'] ?? 'حفظ', ENT_QUOTES, 'UTF-8') ?>">
+            <i class="fas fa-save"></i><?= $t['save_word'] ?? 'حفظ' ?>
+          </button>
+        </form>
       </div>
 
     </div>
-    <div id="subsSetAlert" style="margin-top:10px"></div>
+    <div id="subsSetAlert" style="margin-top:10px"><?php if (($_GET['currency_status'] ?? '') === 'saved'): ?><div class="al al-s"><i class="fas fa-check-circle"></i> تم حفظ إعدادات العملة بنجاح.</div><?php elseif (($_GET['currency_status'] ?? '') === 'invalid'): ?><div class="al al-e"><i class="fas fa-exclamation-circle"></i> أدخل رمز العملة واسمها أولاً.</div><?php elseif (($_GET['currency_status'] ?? '') === 'error'): ?><div class="al al-e"><i class="fas fa-exclamation-circle"></i> تعذر حفظ العملة. راجع اتصال قاعدة البيانات ثم أعد المحاولة.</div><?php elseif (($_GET['currency_status'] ?? '') === 'csrf'): ?><div class="al al-e"><i class="fas fa-shield-alt"></i> انتهت جلسة الحماية. حدّث الصفحة ثم أعد المحاولة.</div><?php endif; ?></div>
   </div>
 
   <!-- ══════ وسيط إعادة البثّ ══════ -->
