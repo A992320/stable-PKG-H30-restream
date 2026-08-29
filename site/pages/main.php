@@ -23,6 +23,11 @@
     <?php endif; ?>
   </div>
   <div class="nav-actions">
+    <?php if (!empty($GLOBALS['__site_user'])): ?>
+      <a href="?__su_logout=1" class="nav-btn shs-sub-logout" title="<?= htmlspecialchars($t['sg_logout'] ?? 'خروج', ENT_QUOTES, 'UTF-8') ?>" aria-label="<?= htmlspecialchars($t['sg_logout'] ?? 'خروج', ENT_QUOTES, 'UTF-8') ?>">
+        <span class="lcn"><svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 17l5-5-5-5"/><path d="M15 12H3"/><path d="M21 19V5a2 2 0 0 0-2-2h-6"/></svg></span>
+      </a>
+    <?php endif; ?>
     <details class="site-language-menu">
       <summary aria-label="تغيير اللغة" title="تغيير اللغة">
         <span class="lcn" aria-hidden="true"><svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" x2="22" y1="12" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg></span>

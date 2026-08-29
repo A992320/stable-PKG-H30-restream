@@ -54,6 +54,7 @@ if (!isset($t) || !is_array($t)) {
 
 // ── تسجيل الخروج ──
 if (isset($_GET['__su_logout'])) {
+    subsForgetUserSession(session_id());
     unset($_SESSION['site_user_id'], $_SESSION['site_username']);
     @session_regenerate_id(true);
     $__q = strtok((string)($_SERVER['REQUEST_URI'] ?? '/'), '?');
@@ -99,10 +100,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['sg_action'])) {
             } else {
                 // تدوير معرّف الجلسة بعد نجاح المصادقة — يبطل أي معرّف
                 // كان المهاجم قد زرعه في المتصفح قبل الدخول (session fixation).
+                subsForgetUserSession(session_id());
                 @session_regenerate_id(true);
+                unset($_SESSION['site_user_id'], $_SESSION['site_username']);
+                $device = subsRegisterUserSession((int)$r['user']['id'], session_id());
+                if (empty($device['ok'])) {
+                    $__sg_err = ($device['error'] ?? '') === 'device_limit'
+                        ? 'تم بلوغ الحد المسموح للأجهزة لهذا الحساب.'
+                        : ($t['sg_login_failed'] ?? 'تعذّر تسجيل الدخول.');
+                    $__sg_view = 'login';
+                    break;
+                }
                 $_SESSION['site_user_id']  = (int)$r['user']['id'];
                 $_SESSION['site_username'] = (string)$r['user']['username'];
-                $_SESSION['sg_csrf'] = bin2hex(random_bytes(32));   // رمز جديد للجلسة الجديدة
+                $_SESSION['sg_csrf'] = bin2hex(random_bytes(32));
                 $__sg_csrf = $_SESSION['sg_csrf'];
             }
             break;
@@ -133,6 +144,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['sg_action'])) {
             } else {
                 // ندخله مباشرة ليصل إلى شاشة الكوبون بلا خطوة إضافية
                 @session_regenerate_id(true);
+                unset($_SESSION['site_user_id'], $_SESSION['site_username']);
+                $device = subsRegisterUserSession((int)$r['id'], session_id());
+                if (empty($device['ok'])) {
+                    $__sg_err = 'تعذّر بدء جلسة الجهاز. أعد تسجيل الدخول.';
+                    $__sg_view = 'login';
+                    break;
+                }
                 $_SESSION['site_user_id']  = (int)$r['id'];
                 $_SESSION['site_username'] = trim((string)$_POST['username']);
                 $_SESSION['sg_csrf'] = bin2hex(random_bytes(32));
@@ -180,6 +198,11 @@ if (!empty($_SESSION['site_user_id'])) {
         unset($_SESSION['site_user_id'], $_SESSION['site_username']);
         $__sg_view = 'login';
     } else {
+        if (!subsValidateUserSession((int)$__sg_user['id'], session_id())) {
+            unset($_SESSION['site_user_id'], $_SESSION['site_username']);
+            $__sg_err = 'انتهت صلاحية هذا الجهاز أو تم تسجيل الخروج من لوحة الإدارة.';
+            $__sg_view = 'login';
+        } else {
         $__st = subsUserStatus($__sg_user);
         if ($__st['active']) {
             // ✔ اشتراك فعّال — يمرّ إلى المحتوى
@@ -195,6 +218,7 @@ if (!empty($_SESSION['site_user_id'])) {
             $__sg_view = 'disabled';
         } else {
             $__sg_view = 'activate';
+        }
         }
     }
 } else {

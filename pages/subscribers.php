@@ -58,7 +58,8 @@
           <th><?= $t["su_days_left"] ?? "المتبقي" ?></th>
           <th><?= $t["su_via"] ?? "التفعيل" ?></th>
           <th><?= $t["su_last_login"] ?? "آخر دخول" ?></th>
-          <th style="width:160px"></th>
+          <th><?= $t["devices"] ?? "الأجهزة" ?></th>
+          <th style="width:190px"></th>
         </tr>
       </thead>
       <tbody id="suBody"></tbody>
@@ -215,6 +216,10 @@
                placeholder="<?= htmlspecialchars($t["ph_8_chars"] ?? "8 أحرف على الأقل") ?>">
       </div>
       <div class="fg">
+        <label class="fl"><?= $t["devices_allowed"] ?? "عدد الأجهزة المسموح بها" ?></label>
+        <input type="number" id="suMaxDevices" class="fi" min="1" max="10" value="1">
+        <small style="color:var(--t3);font-size:.68rem"><?= $t["devices_allowed_desc"] ?? "يمنع الدخول من أجهزة إضافية عند بلوغ الحد." ?></small>
+      </div>      <div class="fg">
         <label class="fl"><?= $t["su_notes"] ?? "ملاحظات" ?></label>
         <textarea id="suNotes" class="fi" rows="2" style="resize:vertical"></textarea>
       </div>

@@ -95,12 +95,7 @@ $__col  = $__unl ? '#4CC9F0' : ($__dl <= 3 ? '#e50914' : ($__warn ? '#F5A623' : 
   box-shadow:0 0 8px <?= $__col ?>;flex-shrink:0}
 #shsSubBadge b{color:#fff;font-weight:700}
 #shsSubBadge .sbdays{color:<?= $__col ?>;font-weight:800;white-space:nowrap}
-#shsSubBadge a{
-  display:flex;align-items:center;justify-content:center;
-  width:26px;height:26px;border-radius:50%;text-decoration:none;
-  background:rgba(229,9,20,.13);color:#ff6b73;font-size:.8rem;transition:.18s
-}
-#shsSubBadge a:hover{background:#e50914;color:#fff}
+
 @media(max-width:600px){#shsSubBadge{font-size:.7rem;padding:6px 7px 6px 11px;opacity:.85}}
 
 /* تختفي أثناء المشاهدة: البطاقة ثابتة أسفل يمين الشاشة وهو موضع أزرار
@@ -122,7 +117,7 @@ $__col  = $__unl ? '#4CC9F0' : ($__dl <= 3 ? '#e50914' : ($__warn ? '#F5A623' : 
         echo $__dl . ' ' . htmlspecialchars($t['sg_days'] ?? 'يوم', ENT_QUOTES, 'UTF-8');
     }
   ?></span>
-  <a href="?__su_logout=1" title="<?= htmlspecialchars($t['sg_logout'] ?? 'خروج', ENT_QUOTES, 'UTF-8') ?>">⏻</a>
+
 </div>
 
 <script>

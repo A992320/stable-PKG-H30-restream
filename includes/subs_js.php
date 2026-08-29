@@ -43,6 +43,8 @@ const T = {
   no_rows:      <?= json_encode($t["js_no_rows"]       ?? "لا توجد سجلات", JSON_UNESCAPED_UNICODE) ?>,
   activated:    <?= json_encode($t["js_activated"]     ?? "تم التفعيل", JSON_UNESCAPED_UNICODE) ?>,
   deactivated:  <?= json_encode($t["js_deactivated"]   ?? "تم الإيقاف", JSON_UNESCAPED_UNICODE) ?>,
+  device_clear_confirm: <?= json_encode($t["js_device_clear_confirm"] ?? "سيتم تسجيل خروج هذا المشترك من كل الأجهزة. متابعة؟", JSON_UNESCAPED_UNICODE) ?>,
+  device_clear_done: <?= json_encode($t["js_device_clear_done"] ?? "تم تسجيل الخروج من جميع الأجهزة.", JSON_UNESCAPED_UNICODE) ?>,
   m_users:      <?= json_encode($t["js_m_users"]       ?? "مشترك", JSON_UNESCAPED_UNICODE) ?>,
   m_active:     <?= json_encode($t["js_m_active"]      ?? "فعّال", JSON_UNESCAPED_UNICODE) ?>,
   m_expired:    <?= json_encode($t["js_m_expired"]     ?? "منتهٍ", JSON_UNESCAPED_UNICODE) ?>,
@@ -277,15 +279,32 @@ function loadSubsSettings(){
     if ($$('setAllowReg'))        $$('setAllowReg').checked        = s.allow_registration === '1';
     if ($$('setCurSymbol'))       $$('setCurSymbol').value         = s.currency_symbol || '$';
     if ($$('setCurCode'))         $$('setCurCode').value           = s.currency_code || 'USD';
+    if ($$('setDefaultDevices'))  $$('setDefaultDevices').value    = s.default_max_devices || 1;
+    window.__subsDefaultDevices = Number(s.default_max_devices || 1);
+    const preset = $$('setCurrencyPreset');
+    if (preset) {
+      const wanted = (s.currency_code || 'USD') + '|' + (s.currency_symbol || '$');
+      preset.value = Array.from(preset.options).some(o => o.value === wanted) ? wanted : 'custom';
+    }
   });
 }
+
+window.subsApplyCurrencyPreset = function(){
+  const preset = $$('setCurrencyPreset');
+  if (!preset || preset.value === 'custom') return;
+  const parts = preset.value.split('|');
+  if ($$('setCurCode')) $$('setCurCode').value = parts[0] || 'USD';
+  if ($$('setCurSymbol')) $$('setCurSymbol').value = parts[1] || '$';
+  subsSaveSettings();
+};
 
 window.subsSaveSettings = function(){
   API('settings_save', {
     index_protection:   $$('setIndexProtection').checked ? 1 : '',
     allow_registration: $$('setAllowReg').checked ? 1 : '',
     currency_symbol:    $$('setCurSymbol').value,
-    currency_code:      $$('setCurCode').value
+    currency_code:      $$('setCurCode').value,
+    default_max_devices: ($$('setDefaultDevices')||{}).value || 1
   }).then(d => {
     if (!d.success) { say('subsSetAlert', emsg(d), 'e'); return; }
     say('subsSetAlert', T.saved, 's');
@@ -532,10 +551,12 @@ window.suLoad = function(page){
         + '<td style="font-weight:800;color:'+dcol+';white-space:nowrap">'+E(dtx)+'</td>'
         + '<td style="font-size:.72rem">'+E((VIA[u.activated_via]||VIA.none)())+'</td>'
         + '<td style="white-space:nowrap;font-size:.72rem;color:var(--t3)">'+E(u.last_login?fdate(u.last_login):'—')+'</td>'
+        + '<td style="white-space:nowrap;font-weight:800;color:var(--t2)"><i class="fas fa-mobile-alt" style="color:#4CC9F0;margin-inline-end:4px"></i>'+E(Number(u.active_devices||0)+' / '+Number(u.max_devices||1))+'</td>'
         + '<td style="white-space:nowrap">'
         +   '<button class="sb-btn ok" onclick="suManage('+Number(u.id)+')" title="'+E(T.manage)+'"><i class="fas fa-bolt"></i></button> '
         +   '<button class="sb-btn" onclick="suEdit('+Number(u.id)+')" title="'+E(T.edit)+'"><i class="fas fa-pen"></i></button> '
         +   (on ? '<button class="sb-btn dg" onclick="suDeactivate('+Number(u.id)+')" title="'+E(T.stop)+'"><i class="fas fa-ban"></i></button> ' : '')
+        +   '<button class="sb-btn" onclick="suClearDevices('+Number(u.id)+')" title="تسجيل خروج كل الأجهزة"><i class="fas fa-mobile-alt"></i></button> '
         +   '<button class="sb-btn" onclick="suShowLogs('+Number(u.id)+')" title="'+E(T.history)+'"><i class="fas fa-history"></i></button> '
         +   '<button class="sb-btn dg" onclick="suDelete('+Number(u.id)+')" title="'+E(T.del)+'"><i class="fas fa-trash"></i></button>'
         + '</td></tr>';
@@ -550,6 +571,7 @@ window.suLoad = function(page){
 window.suNewModal = function(){
   $$('suId').value=''; $$('suUsername').value=''; $$('suEmail').value='';
   $$('suPassword').value=''; $$('suNotes').value='';
+  $$('suMaxDevices').value = window.__subsDefaultDevices || 1;
   $$('suUsername').disabled = false;
   $$('suActivateNow').checked = false;
   $$('suActivateFields').style.display='none';
@@ -570,6 +592,7 @@ window.suEdit = function(id){
   $$('suEmail').value = u.email || '';
   $$('suPassword').value = '';
   $$('suNotes').value = u.notes || '';
+  $$('suMaxDevices').value = Number(u.max_devices || 1);
   $$('suActivateBox').style.display = 'none';
   $$('suPwLabel').textContent = <?= json_encode($t["su_password_opt"] ?? "كلمة مرور جديدة (اتركها فارغة لعدم التغيير)", JSON_UNESCAPED_UNICODE) ?>;
   say('suMAlert','');
@@ -593,7 +616,8 @@ window.suSave = function(){
   if (id) {
     API('sub_update', {
       id: id, email: $$('suEmail').value.trim(),
-      notes: $$('suNotes').value, password: $$('suPassword').value
+      notes: $$('suNotes').value, password: $$('suPassword').value,
+      max_devices: $$('suMaxDevices').value || 1
     }).then(d=>{
       if(!d.success){ say('suMAlert', emsg(d), 'e'); return; }
       CM('suM'); say('suAlert', T.saved, 's'); suLoad(suPage);
@@ -605,7 +629,8 @@ window.suSave = function(){
       email: $$('suEmail').value.trim(),
       activate: $$('suActivateNow').checked ? 1 : '',
       plan_id: $$('suPlan').value || 0,
-      days: $$('suDays').value || 0
+      days: $$('suDays').value || 0,
+      max_devices: $$('suMaxDevices').value || 1
     }).then(d=>{
       if(!d.success){ say('suMAlert', emsg(d), 'e'); return; }
       CM('suM'); say('suAlert', T.saved, 's'); suLoad(1);
@@ -654,6 +679,14 @@ window.suDelete = function(id){
   API('sub_delete',{id:id}).then(d=>{
     if(!d.success){ say('suAlert', emsg(d), 'e'); return; }
     say('suAlert', T.deleted, 's'); suLoad(suPage);
+  });
+};
+
+window.suClearDevices = function(id){
+  if(!confirm(T.device_clear_confirm)) return;
+  API('sub_sessions_clear',{id:id}).then(d=>{
+    if(!d.success){ say('suAlert', emsg(d), 'e'); return; }
+    say('suAlert', T.device_clear_done, 's'); suLoad(suPage);
   });
 };
 

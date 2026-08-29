@@ -54,6 +54,7 @@
   .sb-row:last-child{border-bottom:none}
   .sb-row-t{font-weight:700;color:var(--t1,#fff);font-size:.9rem}
   .sb-row-d{font-size:.75rem;color:var(--t3,#888);margin-top:3px;line-height:1.5}
+  #planM input:-webkit-autofill,#planM input:-webkit-autofill:hover,#planM input:-webkit-autofill:focus{-webkit-text-fill-color:var(--t1,#fff);-webkit-box-shadow:0 0 0 1000px var(--bg3,#1f1f1f) inset;transition:background-color 9999s ease-out 0s}
   </style>
 
   <div class="shdr">
@@ -112,15 +113,33 @@
       </div>
 
       <div class="sb-row">
+        <div style="width:48px;text-align:center;color:#4CC9F0;font-size:1.3rem"><i class="fas fa-mobile-alt"></i></div>
+        <div style="flex:1">
+          <div class="sb-row-t"><?= $t["default_device_limit"] ?? "الحد الافتراضي للأجهزة" ?></div>
+          <div class="sb-row-d"><?= $t["default_device_limit_desc"] ?? "يطبّق على الحسابات الجديدة. يمكن تغيير الحد لكل مشترك من صفحة المشتركين." ?></div>
+        </div>
+        <input type="number" id="setDefaultDevices" class="fi" min="1" max="10" value="1" style="width:86px;text-align:center"
+               onchange="subsSaveSettings()" aria-label="<?= $t["default_device_limit"] ?? "الحد الافتراضي للأجهزة" ?>">
+      </div>
+      <div class="sb-row">
         <div style="width:48px;text-align:center;color:#F5A623;font-size:1.3rem"><i class="fas fa-coins"></i></div>
         <div style="flex:1">
           <div class="sb-row-t"><?= $t["currency"] ?? "العملة" ?></div>
           <div class="sb-row-d"><?= $t["currency_desc"] ?? "الرمز يظهر بجانب كل سعر في اللوحة وصفحات الاشتراك." ?></div>
         </div>
-        <input type="text" id="setCurSymbol" class="fi" maxlength="8" style="width:90px;text-align:center"
-               placeholder="$" onchange="subsSaveSettings()">
-        <input type="text" id="setCurCode" class="fi" maxlength="8" style="width:100px;text-align:center"
-               placeholder="USD" onchange="subsSaveSettings()">
+        <select id="setCurrencyPreset" class="fs" style="width:150px" onchange="subsApplyCurrencyPreset()" aria-label="اختيار العملة">
+          <option value="USD|$">USD — $</option>
+          <option value="IQD|د.ع">IQD — د.ع</option>
+          <option value="SAR|ر.س">SAR — ر.س</option>
+          <option value="AED|د.إ">AED — د.إ</option>
+          <option value="EUR|€">EUR — €</option>
+          <option value="TRY|₺">TRY — ₺</option>
+          <option value="custom"><?= $t["currency_custom"] ?? "عملة مخصصة" ?></option>
+        </select>
+        <input type="text" id="setCurSymbol" class="fi" maxlength="8" style="width:70px;text-align:center"
+               placeholder="$" onchange="subsSaveSettings()" aria-label="رمز العملة">
+        <input type="text" id="setCurCode" class="fi" maxlength="8" style="width:78px;text-align:center"
+               placeholder="USD" onchange="subsSaveSettings()" aria-label="رمز العملة">
       </div>
 
     </div>
