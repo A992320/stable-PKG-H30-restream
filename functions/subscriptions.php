@@ -295,7 +295,15 @@ function subsSetSetting(string $key, string $value): bool
             return $u->execute([$value, $key]);
         }
         $i = db()->prepare("INSERT INTO settings (setting_key,setting_value) VALUES (?,?)");
-        return $i->execute([$key, $value]);
+        try {
+            return $i->execute([$key, $value]);
+        } catch (PDOException $e) {
+            // بعض النسخ القديمة من قاعدة البيانات لا تجعل settings.id تلقائياً.
+            // نضيف رقماً تالياً فقط عند الحاجة، لتبقى متوافقة بلا ترحيل يدوي.
+            $next = (int)db()->query("SELECT COALESCE(MAX(id),0)+1 FROM settings")->fetchColumn();
+            $legacy = db()->prepare("INSERT INTO settings (id,setting_key,setting_value) VALUES (?,?,?)");
+            return $legacy->execute([$next, $key, $value]);
+        }
     } catch (Throwable $e) {
         if (function_exists('logTo')) logTo('error', 'subsSetSetting: ' . $e->getMessage());
         return false;

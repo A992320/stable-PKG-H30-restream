@@ -291,24 +291,56 @@ function loadSubsSettings(){
 
 window.subsApplyCurrencyPreset = function(){
   const preset = $$('setCurrencyPreset');
-  if (!preset || preset.value === 'custom') return;
+  const code = $$('setCurCode');
+  const symbol = $$('setCurSymbol');
+  if (!preset) return;
+  if (preset.value === 'custom') {
+    if (code) { code.value = ''; code.focus(); }
+    if (symbol) symbol.value = '';
+    say('subsSetAlert', 'اكتب اسم العملة ورمزها ثم اضغط حفظ.', 'i');
+    return;
+  }
   const parts = preset.value.split('|');
-  if ($$('setCurCode')) $$('setCurCode').value = parts[0] || 'USD';
-  if ($$('setCurSymbol')) $$('setCurSymbol').value = parts[1] || '$';
-  subsSaveSettings();
+  if (code) code.value = parts[0] || 'USD';
+  if (symbol) symbol.value = parts[1] || '$';
+  say('subsSetAlert', 'اضغط حفظ لتطبيق العملة المختارة.', 'i');
+};
+
+window.subsMarkCustomCurrency = function(){
+  const preset = $$('setCurrencyPreset');
+  if (preset) preset.value = 'custom';
+};
+
+window.subsSaveCurrency = function(){
+  const symbol = (($$('setCurSymbol') || {}).value || '').trim();
+  const code = (($$('setCurCode') || {}).value || '').trim();
+  if (!symbol || !code) {
+    say('subsSetAlert', 'أدخل رمز العملة واسمها أولاً.', 'e');
+    return;
+  }
+  const btn = $$('saveCurrencyBtn');
+  if (btn) btn.disabled = true;
+  subsSaveSettings().finally(() => { if (btn) btn.disabled = false; });
 };
 
 window.subsSaveSettings = function(){
-  API('settings_save', {
-    index_protection:   $$('setIndexProtection').checked ? 1 : '',
-    allow_registration: $$('setAllowReg').checked ? 1 : '',
-    currency_symbol:    $$('setCurSymbol').value,
-    currency_code:      $$('setCurCode').value,
+  const indexProtection = $$('setIndexProtection');
+  const allowRegistration = $$('setAllowReg');
+  const currencySymbol = $$('setCurSymbol');
+  const currencyCode = $$('setCurCode');
+  return API('settings_save', {
+    index_protection:   indexProtection && indexProtection.checked ? 1 : '',
+    allow_registration: allowRegistration && allowRegistration.checked ? 1 : '',
+    currency_symbol:    currencySymbol ? currencySymbol.value : '',
+    currency_code:      currencyCode ? currencyCode.value : '',
     default_max_devices: ($$('setDefaultDevices')||{}).value || 1
   }).then(d => {
-    if (!d.success) { say('subsSetAlert', emsg(d), 'e'); return; }
+    if (!d.success) { say('subsSetAlert', emsg(d), 'e'); return d; }
+    if (currencySymbol && d.currency_symbol) currencySymbol.value = d.currency_symbol;
+    if (currencyCode && d.currency_code) currencyCode.value = d.currency_code;
     say('subsSetAlert', T.saved, 's');
-    loadPlans();  // رمز العملة قد تغيّر
+    loadPlans();
+    return d;
   });
 };
 

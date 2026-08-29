@@ -440,21 +440,23 @@ case 'settings_save': {
     $prot = !empty($_POST['index_protection']) ? '1' : '0';
     $reg  = !empty($_POST['allow_registration']) ? '1' : '0';
     $sym  = mb_substr(trim((string)($_POST['currency_symbol'] ?? '$')), 0, 8);
-    $cod  = strtoupper(preg_replace('/[^A-Za-z]/', '', (string)($_POST['currency_code'] ?? 'USD')));
+    $cod  = preg_replace('/[^\\p{L}\\p{N}]/u', '', trim((string)($_POST['currency_code'] ?? 'USD')));
     $defaultDevices = max(1, min(10, (int)($_POST['default_max_devices'] ?? 1)));
     if ($sym === '') $sym = '$';
     if ($cod === '') $cod = 'USD';
 
-    subsSetSetting('index_protection',   $prot);
-    subsSetSetting('allow_registration', $reg);
-    subsSetSetting('currency_symbol',    $sym);
-    subsSetSetting('currency_code',      mb_substr($cod, 0, 8));
-    subsSetSetting('default_max_devices', (string)$defaultDevices);
+    $savedCode = mb_substr($cod, 0, 8);
+    $saved = subsSetSetting('index_protection', $prot)
+          && subsSetSetting('allow_registration', $reg)
+          && subsSetSetting('currency_symbol', $sym)
+          && subsSetSetting('currency_code', $savedCode)
+          && subsSetSetting('default_max_devices', (string)$defaultDevices);
+    if (!$saved) sErr('server', 500);
 
     if (function_exists('logTo')) {
         logTo('admin', "تغيير إعدادات الاشتراكات: حماية=$prot تسجيل=$reg بواسطة $admin");
     }
-    sOk();
+    sOk(['currency_symbol'=>$sym, 'currency_code'=>$savedCode]);
     break;
 }
 
