@@ -102,6 +102,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['sg_action'])) {
                 // كان المهاجم قد زرعه في المتصفح قبل الدخول (session fixation).
                 subsForgetUserSession(session_id());
                 @session_regenerate_id(true);
+                unset($_SESSION['__subs_previous_sid']);
                 unset($_SESSION['site_user_id'], $_SESSION['site_username']);
                 $device = subsRegisterUserSession((int)$r['user']['id'], session_id());
                 if (empty($device['ok'])) {
@@ -144,6 +145,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['sg_action'])) {
             } else {
                 // ندخله مباشرة ليصل إلى شاشة الكوبون بلا خطوة إضافية
                 @session_regenerate_id(true);
+                unset($_SESSION['__subs_previous_sid']);
                 unset($_SESSION['site_user_id'], $_SESSION['site_username']);
                 $device = subsRegisterUserSession((int)$r['id'], session_id());
                 if (empty($device['ok'])) {

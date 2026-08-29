@@ -646,7 +646,26 @@ function subsValidateUserSession(int $userId, string $sessionId): bool
     try {
         $st = db()->prepare("UPDATE site_user_sessions SET last_seen=NOW() WHERE user_id=? AND session_hash=? AND revoked_at IS NULL");
         $st->execute([$userId, $hash]);
-        if ($st->rowCount() > 0) return true;
+        if ($st->rowCount() > 0) {
+            unset($_SESSION['__subs_previous_sid']);
+            return true;
+        }
+
+        // PHP يدوّر معرّف الجلسة دورياً. ننقل سجل الجهاز بدلاً من احتسابه جهازاً جديداً.
+        $previousId = (string) ($_SESSION['__subs_previous_sid'] ?? '');
+        if ($previousId !== '' && !hash_equals($previousId, $sessionId)) {
+            $move = db()->prepare("UPDATE site_user_sessions SET session_hash=?, last_seen=NOW(), ip=?, user_agent=? WHERE user_id=? AND session_hash=? AND revoked_at IS NULL");
+            $move->execute([
+                $hash,
+                subsClientIp(),
+                mb_substr((string) ($_SERVER['HTTP_USER_AGENT'] ?? ''), 0, 255),
+                $userId,
+                hash('sha256', $previousId),
+            ]);
+            unset($_SESSION['__subs_previous_sid']);
+            if ($move->rowCount() > 0) return true;
+        }
+
         return !empty(subsRegisterUserSession($userId, $sessionId)['ok']);
     } catch (Throwable $e) { return false; }
 }
