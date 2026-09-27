@@ -1,0 +1,311 @@
+#!/bin/bash
+# ═══════════════════════════════════════════════════════════════════════════
+#  shs-storage-helper — أداة الجذر الوحيدة لنظام Multi-Storage
+# ───────────────────────────────────────────────────────────────────────────
+#  لماذا أداة مستقلة؟
+#    PHP يعمل بمستخدم الويب (www-data) ولا يملك صلاحية تقسيم الأقراص أو
+#    تهيئتها أو ربطها. منحه sudo على parted/mkfs/mount مباشرة يعني أن أي ثغرة
+#    في الموقع تستطيع مسح أي قرص في السيرفر — بما فيه قرص النظام.
+#
+#    هذه الأداة هي البوابة الوحيدة: قائمة أوامر مغلقة، كل وسيط يُتحقق منه
+#    بتعبير صارم، وقرص النظام وأعضاء ZFS/LVM/RAID والأقراص المركّبة خارج
+#    مجلدات التخزين مرفوضة دائماً مهما طُلب. سطر sudoers يسمح بهذا الملف
+#    وحده لا بغيره.
+#
+#  التثبيت:   sudo bash tools/install_storage.sh
+#  الإعداد:   /etc/shs-storage.conf
+#  الأوامر:
+#    version
+#    list-system-disks
+#    probe   <dev>                                UUID/نوع نظام الملفات (بلا udev)
+#    smart   <disk>
+#    init    <disk> --yes-destroy <disk>          GPT + قسم واحد يشغل القرص كله
+#    wipe    <disk> --yes-destroy <disk>          حذف كل الأقسام والتواقيع
+#    format  <part> <ext4|xfs> <label> --yes-destroy <part>
+#    mount   <part> <mountpoint>                  + سطر fstab بالـUUID مع nofail
+#    mount-uuid <uuid> <mountpoint>              إعادة ربط قرص معروف ببصمته
+#    umount  <mountpoint> [--forget]              --forget يحذف سطر fstab
+#    chown   <mountpoint>                         يمنح مستخدم الويب ملكية الجذر
+#  كل مخرجات النجاح سطر JSON واحد على stdout؛ الخطأ JSON على stdout + رمز 1.
+# ═══════════════════════════════════════════════════════════════════════════
+set -u
+export LC_ALL=C
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+CONF=/etc/shs-storage.conf
+MOUNT_PREFIXES="/mnt/ /srv/storage/ /media/storage/"
+WEB_USER="www-data"
+ALLOW_LOOP=0
+# shellcheck disable=SC1090
+[ -r "$CONF" ] && . "$CONF"
+
+VERSION=2
+
+json_str() {  # ترميز JSON آمن لنص
+    local s=${1//\\/\\\\}; s=${s//\"/\\\"}; s=${s//$'\n'/\\n}; s=${s//$'\r'/}; s=${s//$'\t'/ }
+    printf '"%s"' "$s"
+}
+fail() { printf '{"ok":false,"error":%s}\n' "$(json_str "$1")"; exit 1; }
+ok()   { printf '{"ok":true%s}\n' "${1:+,$1}"; exit 0; }
+
+[ "$(id -u)" -eq 0 ] || fail "يجب تشغيل الأداة بصلاحية الجذر (عبر sudo)"
+
+# ── فضاء الربط (mount namespace) ─────────────────────────────────────────
+# Apache (PrivateTmp=true) وphp-fpm يعملان في فضاء ربط خاص بهما. أي mount
+# يُنفَّذ من داخله يبقى محبوساً فيه: الموقع يرى القرص مركّباً، أما النظام
+# نفسه ومهمة cron والإقلاع التالي فيرون المجلد فارغاً على قرص النظام — فيظهر
+# التخزين Offline «القرص غير مركّب». لذلك تنتقل الأداة أولاً إلى فضاء ربط
+# النظام (PID 1)؛ الربط هناك ينتشر تلقائياً إلى فضاء خدمة الويب (slave).
+HOST_NS_PID=${HOST_NS_PID:-1}
+if [ -z "${SHS_HOST_NS:-}" ] && [[ "$HOST_NS_PID" =~ ^[0-9]+$ ]]; then
+    _self_ns=$(readlink /proc/self/ns/mnt 2>/dev/null)
+    _host_ns=$(readlink "/proc/$HOST_NS_PID/ns/mnt" 2>/dev/null)
+    if [ -n "$_host_ns" ] && [ "$_self_ns" != "$_host_ns" ] && command -v nsenter >/dev/null 2>&1 \
+       && nsenter --mount="/proc/$HOST_NS_PID/ns/mnt" -- true >/dev/null 2>&1; then
+        exec env SHS_HOST_NS=1 nsenter --mount="/proc/$HOST_NS_PID/ns/mnt" -- "$(readlink -f "$0")" "$@"
+    fi
+fi
+
+# ── التحقق من الوسائط ─────────────────────────────────────────────────────
+valid_dev() { [[ "$1" =~ ^/dev/(sd[a-z]{1,2}|vd[a-z]{1,2}|xvd[a-z]{1,2}|hd[a-z]|nvme[0-9]{1,2}n[0-9]{1,2}|mmcblk[0-9]{1,2}|loop[0-9]{1,3})$ ]]; }
+valid_part() { [[ "$1" =~ ^/dev/(sd[a-z]{1,2}[0-9]{1,3}|vd[a-z]{1,2}[0-9]{1,3}|xvd[a-z]{1,2}[0-9]{1,3}|hd[a-z][0-9]{1,3}|nvme[0-9]{1,2}n[0-9]{1,2}p[0-9]{1,3}|mmcblk[0-9]{1,2}p[0-9]{1,3}|loop[0-9]{1,3}p[0-9]{1,3})$ ]]; }
+valid_mp() {
+    local mp=$1 p
+    [[ "$mp" =~ ^/[A-Za-z0-9._/-]{2,200}$ ]] || return 1
+    [[ "$mp" == *"/.."* || "$mp" == *"//"* || "$mp" == */ ]] && return 1
+    for p in $MOUNT_PREFIXES; do
+        [[ "$mp" == "$p"?* ]] && return 0
+    done
+    return 1
+}
+is_loop() { [[ "$1" == /dev/loop* ]]; }
+
+dev_type() { lsblk -dno TYPE "$1" 2>/dev/null | head -n1 | tr -d ' '; }
+parent_of() { local pk; pk=$(lsblk -no PKNAME "$1" 2>/dev/null | head -n1 | tr -d ' '); [ -n "$pk" ] && echo "/dev/$pk"; }
+
+# ── أقراص النظام: كل قرص يحمل / أو /boot أو /usr أو /var أو swap ─────────
+system_disks() {
+    local src mp line
+    {
+        for mp in / /boot /boot/efi /usr /var /home; do
+            src=$(findmnt -n -o SOURCE --target "$mp" 2>/dev/null | head -n1)
+            [ -n "$src" ] && echo "$src"
+        done
+        awk 'NR>1{print $1}' /proc/swaps 2>/dev/null
+    } | sort -u | while read -r src; do
+        [[ "$src" == /dev/* ]] || continue
+        # -s يتتبّع التبعيات عكسياً حتى القرص الفعلي (يغطي LVM وLUKS وmdraid)
+        lsblk -s -n -o PATH,TYPE "$src" 2>/dev/null | while read -r line; do
+            set -- $line
+            [ "${2:-}" = "disk" ] && echo "$1"
+        done
+    done | sort -u
+}
+
+is_system_disk() { system_disks | grep -qx "$1"; }
+
+# نوع نظام الملفات وحالة الربط لجهاز — من blkid وfindmnt لا من lsblk:
+# lsblk بلا قاعدة udev يعيد FSTYPE فارغاً، وفي الوضع الخام (-r) يُسقط العمود
+# الفارغ فتنزاح الأعمدة ويُقرأ مسار الربط كأنه نوع نظام الملفات — أي أن قسماً
+# مركّباً كان سيبدو غير مركّب ويمرّ فحص الحماية. هنا لكل قيمة استعلامها.
+fs_of()    { blkid -p -s TYPE -o value "$1" 2>/dev/null | head -n1; }
+mounts_of(){ findmnt -rn -S "$1" -o TARGET 2>/dev/null | head -n1; }
+parts_of() { lsblk -rn -o PATH,TYPE "$1" 2>/dev/null | awk '$2=="part"{print $1}'; }
+
+# يرفض أي عملية مدمّرة على قرص غير آمن. $1 = القرص الكامل
+guard_disk_destroy() {
+    local disk=$1 dev fst mp
+    valid_dev "$disk" || fail "اسم قرص غير صالح: $disk"
+    [ -b "$disk" ] || fail "القرص غير موجود: $disk"
+    if is_loop "$disk"; then
+        [ "$ALLOW_LOOP" = "1" ] || fail "أجهزة loop غير مسموحة (ALLOW_LOOP=0)"
+    else
+        [ "$(dev_type "$disk")" = "disk" ] || fail "$disk ليس قرصاً كاملاً"
+    fi
+    is_system_disk "$disk" && fail "مرفوض: $disk هو قرص النظام"
+    for dev in "$disk" $(parts_of "$disk"); do
+        fst=$(fs_of "$dev")
+        case "$fst" in
+            zfs_member|LVM2_member|linux_raid_member|crypto_LUKS|bcache)
+                fail "مرفوض: $dev عضو في $fst — أزله من ذلك النظام أولاً" ;;
+        esac
+        mp=$(mounts_of "$dev")
+        [ -n "$mp" ] && fail "مرفوض: $dev مركّب على $mp — فكّ الربط أولاً"
+        grep -qs "^$dev " /proc/swaps && fail "مرفوض: $dev مستخدم كذاكرة swap"
+    done
+    return 0
+}
+
+# يضبط GUARD_DISK ولا يُستدعى داخل $(...) — وإلا ابتلعت الصَّدفة الفرعية رسالة الخطأ
+GUARD_DISK=""
+guard_part() {
+    local part=$1
+    valid_part "$part" || fail "اسم قسم غير صالح: $part"
+    [ -b "$part" ] || fail "القسم غير موجود: $part"
+    [ "$(dev_type "$part")" = "part" ] || fail "$part ليس قسماً (partition)"
+    GUARD_DISK=$(parent_of "$part")
+    [ -n "$GUARD_DISK" ] || fail "تعذّر تحديد القرص الأب لـ $part"
+    if is_loop "$GUARD_DISK" && [ "$ALLOW_LOOP" != "1" ]; then fail "أجهزة loop غير مسموحة"; fi
+    is_system_disk "$GUARD_DISK" && fail "مرفوض: $part على قرص النظام"
+    return 0
+}
+
+settle() { command -v udevadm >/dev/null 2>&1 && udevadm settle -t 10 >/dev/null 2>&1; sleep 1; }
+
+first_partition() {
+    local disk=$1 p
+    p=$(lsblk -rn -o PATH,TYPE "$disk" 2>/dev/null | awk '$2=="part"{print $1; exit}')
+    echo "$p"
+}
+
+fstab_remove() {   # يحذف سطر fstab لنقطة ربط بعينها
+    local mp=$1
+    [ -f /etc/fstab ] || return 0
+    cp -a /etc/fstab "/etc/fstab.shs-bak-$(date +%Y%m%d%H%M%S)"
+    awk -v mp="$mp" '($2 != mp) {print}' /etc/fstab > /etc/fstab.shs-tmp && cat /etc/fstab.shs-tmp > /etc/fstab && rm -f /etc/fstab.shs-tmp
+}
+
+do_mount() {   # $1 = القسم، $2 = نقطة الربط — يُنهي الأداة بـ ok أو fail
+    local part=$1 mp=$2 disk cur uuid fst err
+    valid_mp "$mp" || fail "نقطة ربط غير مسموحة: $mp (المسموح تحت: $MOUNT_PREFIXES)"
+    guard_part "$part"; disk=$GUARD_DISK
+    cur=$(mounts_of "$part")
+    [ -z "$cur" ] || fail "القسم مركّب مسبقاً على $cur"
+    findmnt -rn --mountpoint "$mp" >/dev/null 2>&1 && fail "نقطة الربط $mp مشغولة بقرص آخر"
+    uuid=$(blkid -p -s UUID -o value "$part" 2>/dev/null); fst=$(fs_of "$part")
+    [ -n "$uuid" ] && [ -n "$fst" ] || fail "القسم غير مهيّأ (لا نظام ملفات)"
+    case "$fst" in ext4|xfs|ext3|ext2|btrfs) ;; *) fail "نظام ملفات غير مدعوم للتخزين: $fst";; esac
+    if [ -d "$mp" ] && [ -n "$(ls -A "$mp" 2>/dev/null)" ]; then
+        fail "المجلد $mp ليس فارغاً — الربط فوقه يُخفي ملفاته. اختر مجلداً فارغاً"
+    fi
+    mkdir -p "$mp" || fail "تعذّر إنشاء $mp"
+    if ! mount -o defaults,noatime "UUID=$uuid" "$mp" 2>/dev/null; then
+        err=$(mount -o defaults,noatime "$part" "$mp" 2>&1) || fail "فشل الربط: $(echo "$err" | head -n1)"
+    fi
+    if [ -f /etc/fstab ] && ! is_loop "$disk"; then
+        fstab_remove "$mp"
+        # nofail: إن غاب القرص عند الإقلاع لا يتوقف السيرفر كله — هذا جوهر الاستقلالية
+        printf 'UUID=%s %s %s defaults,noatime,nofail,x-systemd.device-timeout=10s 0 2\n' "$uuid" "$mp" "$fst" >> /etc/fstab
+    fi
+    chown "$WEB_USER:$WEB_USER" "$mp" 2>/dev/null; chmod 0775 "$mp"
+    ok "\"partition\":$(json_str "$part"),\"mountpoint\":$(json_str "$mp"),\"uuid\":$(json_str "$uuid"),\"fs\":$(json_str "$fst")"
+}
+
+cmd=${1:-}; shift || true
+case "$cmd" in
+    version)
+        ok "\"version\":$VERSION,\"allow_loop\":$([ "$ALLOW_LOOP" = "1" ] && echo true || echo false),\"prefixes\":$(json_str "$MOUNT_PREFIXES")"
+        ;;
+
+    list-system-disks)
+        list=$(system_disks | while read -r d; do printf '%s,' "$(json_str "$d")"; done)
+        ok "\"disks\":[${list%,}]"
+        ;;
+
+    probe)
+        # UUID ونوع نظام الملفات بقراءة الجهاز نفسه (blkid -p يحتاج الجذر).
+        # بلا udev (حاويات وبعض الخوادم) لا يعرف lsblk ولا /dev/disk/by-uuid هذه القيم.
+        dev=${1:-}
+        valid_dev "$dev" || valid_part "$dev" || fail "جهاز غير صالح"
+        [ -b "$dev" ] || fail "الجهاز غير موجود"
+        ok "\"device\":$(json_str "$dev"),\"uuid\":$(json_str "$(blkid -p -s UUID -o value "$dev" 2>/dev/null)"),\"fs\":$(json_str "$(fs_of "$dev")"),\"label\":$(json_str "$(blkid -p -s LABEL -o value "$dev" 2>/dev/null)")"
+        ;;
+
+    smart)
+        disk=${1:-}
+        valid_dev "$disk" || fail "اسم قرص غير صالح"
+        [ -b "$disk" ] || fail "القرص غير موجود"
+        is_loop "$disk" && ok "\"supported\":false,\"reason\":\"loop\""
+        command -v smartctl >/dev/null 2>&1 || ok "\"supported\":false,\"reason\":\"smartctl غير مثبّت (apt install smartmontools)\""
+        # -n standby: لا نوقظ قرصاً نائماً لمجرد قراءة الحرارة
+        out=$(smartctl -j -i -H -A -n standby "$disk" 2>/dev/null); rc=$?
+        [ -n "$out" ] || ok "\"supported\":false,\"reason\":\"no-output\",\"rc\":$rc"
+        printf '{"ok":true,"supported":true,"rc":%d,"smart":%s}\n' "$rc" "$out"
+        exit 0
+        ;;
+
+    init|wipe)
+        disk=${1:-}; flag=${2:-}; confirm=${3:-}
+        [ "$flag" = "--yes-destroy" ] && [ "$confirm" = "$disk" ] || fail "تأكيد الحذف مفقود: يلزم --yes-destroy <نفس القرص>"
+        guard_disk_destroy "$disk"
+        for p in $(lsblk -rn -o PATH,TYPE "$disk" | awk '$2=="part"{print $1}'); do wipefs -a "$p" >/dev/null 2>&1; done
+        wipefs -a "$disk" >/dev/null 2>&1 || fail "فشل مسح التواقيع من $disk"
+        if [ "$cmd" = "wipe" ]; then
+            command -v sgdisk >/dev/null 2>&1 && sgdisk --zap-all "$disk" >/dev/null 2>&1
+            partprobe "$disk" >/dev/null 2>&1; partx -u "$disk" >/dev/null 2>&1; settle
+            ok "\"disk\":$(json_str "$disk")"
+        fi
+        parted -s -a optimal "$disk" mklabel gpt mkpart primary 0% 100% >/dev/null 2>&1 || fail "فشل إنشاء جدول الأقسام على $disk"
+        partprobe "$disk" >/dev/null 2>&1; partx -u "$disk" >/dev/null 2>&1; settle
+        part=$(first_partition "$disk")
+        [ -n "$part" ] && [ -b "$part" ] || fail "أُنشئ الجدول لكن القسم لم يظهر بعد — أعد الفحص بعد ثوانٍ"
+        ok "\"disk\":$(json_str "$disk"),\"partition\":$(json_str "$part")"
+        ;;
+
+    format)
+        part=${1:-}; fs=${2:-}; label=${3:-}; flag=${4:-}; confirm=${5:-}
+        [ "$flag" = "--yes-destroy" ] && [ "$confirm" = "$part" ] || fail "تأكيد التهيئة مفقود: يلزم --yes-destroy <نفس القسم>"
+        guard_part "$part"; disk=$GUARD_DISK
+        [[ "$label" =~ ^[A-Za-z0-9_-]{1,12}$ ]] || fail "التسمية: 1-12 حرفاً لاتينياً أو رقماً أو - _"
+        mp=$(mounts_of "$part")
+        [ -z "$mp" ] || fail "مرفوض: $part مركّب على $mp — فكّ الربط أولاً"
+        fst=$(fs_of "$part")
+        case "$fst" in zfs_member|LVM2_member|linux_raid_member|crypto_LUKS) fail "مرفوض: $part عضو في $fst";; esac
+        case "$fs" in
+            ext4) err=$(mkfs.ext4 -q -F -m 0 -L "$label" "$part" 2>&1 >/dev/null) || fail "فشل mkfs.ext4: $(echo "$err" | tail -n1)" ;;
+            xfs)  command -v mkfs.xfs >/dev/null 2>&1 || fail "mkfs.xfs غير مثبّت (apt install xfsprogs)"
+                  err=$(mkfs.xfs -q -f -L "$label" "$part" 2>&1 >/dev/null) || fail "فشل mkfs.xfs: $(echo "$err" | tail -n1)" ;;
+            *)    fail "نظام ملفات غير مدعوم: $fs (ext4 أو xfs)" ;;
+        esac
+        settle
+        uuid=$(blkid -p -s UUID -o value "$part" 2>/dev/null)
+        ok "\"partition\":$(json_str "$part"),\"fs\":$(json_str "$fs"),\"uuid\":$(json_str "$uuid"),\"label\":$(json_str "$label")"
+        ;;
+
+    mount)
+        do_mount "${1:-}" "${2:-}"
+        ;;
+
+    mount-uuid)
+        # إعادة ربط تخزين معروف بعد إعادة التشغيل أو تغيّر اسم الجهاز (sdb→sdc):
+        # القرص يُعرَف ببصمته (UUID) لا باسمه، ولا يُهيَّأ ولا يُمسّ محتواه.
+        uuid=${1:-}; mp=${2:-}
+        [[ "$uuid" =~ ^[A-Fa-f0-9-]{8,64}$ ]] || fail "UUID غير صالح"
+        valid_mp "$mp" || fail "نقطة ربط غير مسموحة: $mp"
+        cur=$(findmnt -rn --mountpoint "$mp" -o SOURCE 2>/dev/null | head -n1)
+        if [ -n "$cur" ]; then
+            [ "$(blkid -p -s UUID -o value "$cur" 2>/dev/null)" = "$uuid" ] && ok "\"mountpoint\":$(json_str "$mp"),\"already\":true,\"partition\":$(json_str "$cur")"
+            fail "نقطة الربط $mp مشغولة بقرص آخر ($cur)"
+        fi
+        part=$(blkid -U "$uuid" 2>/dev/null | head -n1)
+        if [ -z "$part" ]; then   # بلا cache/udev: فحص مباشر لكل الأقسام
+            for d in $(lsblk -rn -o PATH,TYPE | awk '$2=="part"{print $1}'); do
+                [ "$(blkid -p -s UUID -o value "$d" 2>/dev/null)" = "$uuid" ] && { part=$d; break; }
+            done
+        fi
+        [ -n "$part" ] || fail "القرص صاحب UUID=$uuid غير موصول بالسيرفر الآن"
+        do_mount "$part" "$mp"
+        ;;
+
+    umount)
+        mp=${1:-}; forget=${2:-}
+        valid_mp "$mp" || fail "نقطة ربط غير مسموحة: $mp"
+        if findmnt -rn --mountpoint "$mp" >/dev/null 2>&1; then
+            umount "$mp" 2>/dev/null || fail "فشل فكّ الربط — القرص مشغول (ملف مفتوح أو بثّ جارٍ). أعد المحاولة بعد إيقاف المشاهدة أو النقل"
+        fi
+        [ "$forget" = "--forget" ] && fstab_remove "$mp"
+        ok "\"mountpoint\":$(json_str "$mp")"
+        ;;
+
+    chown)
+        mp=${1:-}
+        valid_mp "$mp" || fail "نقطة ربط غير مسموحة: $mp"
+        [ -d "$mp" ] || fail "المجلد غير موجود"
+        chown "$WEB_USER:$WEB_USER" "$mp" && chmod 0775 "$mp" || fail "فشل تغيير الملكية"
+        ok "\"mountpoint\":$(json_str "$mp")"
+        ;;
+
+    *)
+        fail "أمر غير معروف"
+        ;;
+esac
